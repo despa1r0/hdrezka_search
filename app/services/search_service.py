@@ -7,7 +7,8 @@ from typing import Any
 
 from app.clients.imdb import ImdbClient
 from app.clients.rezka import RezkaClient, fetch_page_metadata
-from app.config import DEFAULT_RESULT_LIMIT, MAX_RESULT_LIMIT
+from app.config import DEFAULT_RESULT_LIMIT, MAX_CANDIDATE_SCAN, MAX_RESULT_LIMIT
+from app.debug import debug_log
 from app.models import SearchItem
 from app.utils.text import normalize, parse_rating, split_csv, transliterate
 
@@ -26,33 +27,32 @@ class SearchService:
         if not query:
             return HTTPStatus.BAD_REQUEST, {"error": "Введите поисковый запрос."}
 
-        max_results = self._parse_result_limit(params.get("max_results", ""))
-        min_rating = parse_rating(params.get("min_rating", ""))
-        include_genres = self._include_genres(params, query)
-        include_countries = split_csv(params.get("include_countries", ""))
-        banned_genres = split_csv(params.get("ban_genres", ""))
-        banned_countries = split_csv(params.get("ban_countries", ""))
-
+        options = self._parse_options(params, query)
         started = time.perf_counter()
-        items = self.rezka_client.search(query, max_results)
-        self._enrich_items(items, query)
-        items = self._filter_items(
-            items=items,
-            include_genres=include_genres,
-            include_countries=include_countries,
-            banned_genres=banned_genres,
-            banned_countries=banned_countries,
-            min_rating=min_rating,
-        )
-        items = items[:max_results]
+        accepted = self._collect_until_limit(query, options)
+        accepted = self._sort_items(accepted, options["sort_order"])
 
         return HTTPStatus.OK, {
             "query": query,
-            "count": len(items),
+            "count": len(accepted),
             "elapsed": round(time.perf_counter() - started, 2),
-            "maxResults": max_results,
+            "maxResults": options["max_results"],
             "ratingSource": "IMDb",
-            "items": [item.as_dict() for item in items],
+            "items": [item.as_dict() for item in accepted[: options["max_results"]]],
+        }
+
+    def _parse_options(self, params: dict[str, str], query: str) -> dict[str, Any]:
+        rating_min, rating_max = self._parse_rating_range(params)
+        return {
+            "debug": params.get("debug", "").lower() in {"1", "true", "on", "yes"},
+            "include_genres": self._include_genres(params, query),
+            "include_countries": split_csv(params.get("include_countries", "")),
+            "banned_genres": split_csv(params.get("ban_genres", "")),
+            "banned_countries": split_csv(params.get("ban_countries", "")),
+            "max_results": self._parse_result_limit(params.get("max_results", "")),
+            "rating_min": rating_min,
+            "rating_max": rating_max,
+            "sort_order": params.get("sort_order", "desc"),
         }
 
     def _parse_result_limit(self, value: str) -> int:
@@ -62,6 +62,19 @@ class SearchService:
             requested = DEFAULT_RESULT_LIMIT
 
         return max(1, min(requested, MAX_RESULT_LIMIT))
+
+    def _parse_rating_range(self, params: dict[str, str]) -> tuple[float | None, float | None]:
+        rating_range = params.get("rating_range", "").strip()
+        if rating_range:
+            parts = [part for part in rating_range.replace(",", ".").split("-") if part.strip()]
+            ratings = [parse_rating(part) for part in parts]
+            ratings = [rating for rating in ratings if rating is not None]
+            if len(ratings) >= 2:
+                return min(ratings), max(ratings)
+            if len(ratings) == 1:
+                return ratings[0], None
+
+        return parse_rating(params.get("min_rating", "")), parse_rating(params.get("max_rating", ""))
 
     def _include_genres(self, params: dict[str, str], query: str) -> list[str]:
         include_genres = split_csv(params.get("include_genres", ""))
@@ -74,25 +87,58 @@ class SearchService:
 
         return []
 
-    def _enrich_items(self, items: list[SearchItem], fallback_query: str) -> None:
+    def _collect_until_limit(self, query: str, options: dict[str, Any]) -> list[SearchItem]:
+        accepted: list[SearchItem] = []
+        seen_urls: set[str] = set()
+        scan_limit = min(MAX_CANDIDATE_SCAN, max(options["max_results"] * 4, options["max_results"]))
+        candidate_limit = options["max_results"]
+
+        while len(accepted) < options["max_results"] and candidate_limit <= scan_limit:
+            debug_log(
+                f"search query={query!r} candidate_limit={candidate_limit} accepted={len(accepted)}",
+                options["debug"],
+            )
+            candidates = self.rezka_client.search(query, candidate_limit)
+            new_candidates = [item for item in candidates if item.url not in seen_urls]
+            if not new_candidates:
+                break
+
+            self._enrich_items(new_candidates, options)
+
+            for item in new_candidates:
+                seen_urls.add(item.url)
+                if self._matches_filters(item, options):
+                    accepted.append(item)
+                    if len(accepted) >= options["max_results"]:
+                        break
+
+            candidate_limit = min(candidate_limit * 2, scan_limit + 1)
+
+        debug_log(f"done accepted={len(accepted)} scanned={len(seen_urls)}", options["debug"])
+        return accepted
+
+    def _enrich_items(self, items: list[SearchItem], options: dict[str, Any]) -> None:
         if not items:
             return
 
         workers = min(12, len(items))
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            list(executor.map(lambda item: self._enrich_item(item, fallback_query), items))
+            list(executor.map(lambda item: self._enrich_item(item, options), items))
 
-    def _enrich_item(self, item: SearchItem, fallback_query: str) -> None:
-        self._apply_rezka_metadata(item)
-        self._apply_imdb_rating(item, fallback_query)
+    def _enrich_item(self, item: SearchItem, options: dict[str, Any]) -> None:
+        self._apply_rezka_metadata(item, options["debug"])
+        self._apply_imdb_rating(item, options["debug"])
 
-    def _apply_rezka_metadata(self, item: SearchItem) -> None:
+    def _apply_rezka_metadata(self, item: SearchItem, debug: bool) -> None:
         try:
             metadata = fetch_page_metadata(item.url)
-        except Exception:
+        except Exception as exc:
+            debug_log(f"metadata failed url={item.url} error={exc}", debug)
+            if item.seed_genres and not item.genres:
+                item.genres = item.seed_genres
             return
 
-        item.genres = metadata.get("genres") or []
+        item.genres = metadata.get("genres") or item.genres or item.seed_genres
         item.countries = metadata.get("countries") or []
         item.year = item.year or metadata.get("year", "")
         item.description = metadata.get("description", "")
@@ -100,46 +146,52 @@ class SearchService:
         item.original_title = metadata.get("originalTitle", "")
         item.source_rating = item.source_rating or metadata.get("rezkaRating")
 
-    def _apply_imdb_rating(self, item: SearchItem, fallback_query: str) -> None:
+    def _apply_imdb_rating(self, item: SearchItem, debug: bool) -> None:
         titles = [
             item.original_title,
             item.title,
-            fallback_query,
             transliterate(item.title),
         ]
-        item.imdb_rating = self.imdb_client.fetch_first_rating(titles, item.year)
+        try:
+            item.imdb_rating = self.imdb_client.fetch_first_rating(titles, item.year)
+        except Exception as exc:
+            debug_log(f"imdb failed title={item.title!r} year={item.year!r} error={exc}", debug)
+            item.imdb_rating = None
+
         item.rating = item.imdb_rating
         item.rating_source = "IMDb" if item.imdb_rating is not None else ""
 
-    def _filter_items(
-        self,
-        items: list[SearchItem],
-        include_genres: list[str],
-        include_countries: list[str],
-        banned_genres: list[str],
-        banned_countries: list[str],
-        min_rating: float | None,
-    ) -> list[SearchItem]:
-        filtered = [
-            item
-            for item in items
-            if self._has_all(item.genres, include_genres)
-            and self._has_all(item.countries, include_countries)
-            and not self._has_any(item.genres, banned_genres)
-            and not self._has_any(item.countries, banned_countries)
-            and self._passes_min_rating(item, min_rating)
-        ]
-
-        return sorted(
-            filtered,
-            key=lambda item: (item.rating is not None, item.rating or 0.0, item.title),
-            reverse=True,
+    def _matches_filters(self, item: SearchItem, options: dict[str, Any]) -> bool:
+        return (
+            self._has_all(item.genres, options["include_genres"])
+            and self._has_all(item.countries, options["include_countries"])
+            and not self._has_any(item.genres, options["banned_genres"])
+            and not self._has_any(item.countries, options["banned_countries"])
+            and self._passes_rating_range(item, options["rating_min"], options["rating_max"])
         )
 
-    def _passes_min_rating(self, item: SearchItem, min_rating: float | None) -> bool:
-        if min_rating is None:
+    def _passes_rating_range(
+        self,
+        item: SearchItem,
+        rating_min: float | None,
+        rating_max: float | None,
+    ) -> bool:
+        if rating_min is None and rating_max is None:
             return True
-        return item.rating is not None and item.rating >= min_rating
+        if item.rating is None:
+            return False
+        if rating_min is not None and item.rating < rating_min:
+            return False
+        if rating_max is not None and item.rating > rating_max:
+            return False
+        return True
+
+    def _sort_items(self, items: list[SearchItem], sort_order: str) -> list[SearchItem]:
+        reverse = sort_order != "asc"
+        rated = [item for item in items if item.rating is not None]
+        unrated = [item for item in items if item.rating is None]
+        rated = sorted(rated, key=lambda item: (item.rating or 0.0, item.title), reverse=reverse)
+        return rated + sorted(unrated, key=lambda item: item.title)
 
     def _has_any(self, values: list[str], needles: list[str]) -> bool:
         normalized_values = [normalize(value) for value in values]

@@ -38,6 +38,21 @@ GENRE_PATHS = {
     "\u0438\u0441\u0442\u043e\u0440\u0438\u0447\u0435\u0441\u043a\u0438\u0435": "historical",
 }
 
+GENRE_NAMES = {
+    "fiction": "\u0424\u0430\u043d\u0442\u0430\u0441\u0442\u0438\u043a\u0430",
+    "detective": "\u0414\u0435\u0442\u0435\u043a\u0442\u0438\u0432\u044b",
+    "horror": "\u0423\u0436\u0430\u0441\u044b",
+    "action": "\u0411\u043e\u0435\u0432\u0438\u043a\u0438",
+    "comedy": "\u041a\u043e\u043c\u0435\u0434\u0438\u0438",
+    "drama": "\u0414\u0440\u0430\u043c\u044b",
+    "romance": "\u041c\u0435\u043b\u043e\u0434\u0440\u0430\u043c\u044b",
+    "thriller": "\u0422\u0440\u0438\u043b\u043b\u0435\u0440\u044b",
+    "crime": "\u041a\u0440\u0438\u043c\u0438\u043d\u0430\u043b",
+    "fantasy": "\u0424\u044d\u043d\u0442\u0435\u0437\u0438",
+    "adventures": "\u041f\u0440\u0438\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f",
+    "historical": "\u0418\u0441\u0442\u043e\u0440\u0438\u0447\u0435\u0441\u043a\u0438\u0435",
+}
+
 
 class RezkaClient:
     def __init__(self, base_url: str = REZKA_BASE_URL) -> None:
@@ -86,7 +101,7 @@ class RezkaClient:
         while len(items) < limit:
             page_items: list[SearchItem] = []
             for slug in slugs:
-                page_items.extend(self._fetch_catalog_page(self._catalog_page_url(slug, page)))
+                page_items.extend(self._fetch_catalog_page(self._catalog_page_url(slug, page), slug))
 
             if not page_items:
                 break
@@ -115,7 +130,7 @@ class RezkaClient:
             return f"{self.base_url}/films/{slug}/"
         return f"{self.base_url}/films/{slug}/page/{page}/"
 
-    def _fetch_catalog_page(self, url: str) -> list[SearchItem]:
+    def _fetch_catalog_page(self, url: str, slug: str = "") -> list[SearchItem]:
         response = requests.get(
             url,
             headers={"User-Agent": USER_AGENT},
@@ -142,6 +157,8 @@ class RezkaClient:
                     url=item_url,
                     image=str(cover.get("src") if cover else ""),
                     category="films",
+                    genres=[GENRE_NAMES[slug]] if slug in GENRE_NAMES else [],
+                    seed_genres=[GENRE_NAMES[slug]] if slug in GENRE_NAMES else [],
                     year=parse_year(title),
                 )
             )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from functools import lru_cache
 from urllib.parse import quote
 
@@ -15,7 +16,7 @@ from app.utils.text import normalize, parse_rating, transliterate
 class ImdbClient:
     def fetch_first_rating(self, titles: list[str], year: str = "") -> float | None:
         seen: set[str] = set()
-        for title in titles:
+        for title in self._title_variants(titles):
             normalized = normalize(title)
             if not normalized or normalized in seen:
                 continue
@@ -37,7 +38,7 @@ class ImdbClient:
         if not slug:
             return None
 
-        imdb_id = self._find_imdb_id(slug, year)
+        imdb_id = self._find_imdb_id(slug, title, year)
         if not imdb_id:
             return None
 
@@ -47,7 +48,16 @@ class ImdbClient:
         title = transliterate(title)
         return re.sub(r"[^a-zA-Z0-9_ -]", "", title).strip().replace(" ", "_")
 
-    def _find_imdb_id(self, slug: str, year: str = "") -> str:
+    def _title_variants(self, titles: list[str]) -> list[str]:
+        variants: list[str] = []
+        for title in titles:
+            for part in re.split(r"\s*/\s*|\s+\|\s+", title):
+                clean = part.strip()
+                if clean and clean not in variants:
+                    variants.append(clean)
+        return variants
+
+    def _find_imdb_id(self, slug: str, original_title: str, year: str = "") -> str:
         url = f"https://v3.sg.media-imdb.com/suggestion/{slug[0].lower()}/{quote(slug)}.json"
         response = requests.get(
             url,
@@ -60,13 +70,17 @@ class ImdbClient:
             return ""
 
         wanted_year = int(year) if year.isdigit() else None
+        wanted_title = normalize(transliterate(original_title))
 
         def score(candidate: dict) -> int:
             value = 0
+            candidate_title = normalize(candidate.get("l", ""))
+            similarity = SequenceMatcher(None, wanted_title, candidate_title).ratio()
+            value += int(similarity * 100)
             if candidate.get("qid") in {"movie", "tvSeries", "tvMiniSeries"}:
-                value += 2
+                value += 20
             if wanted_year and candidate.get("y") == wanted_year:
-                value += 3
+                value += 40
             return value
 
         return str(max(candidates, key=score).get("id") or "")

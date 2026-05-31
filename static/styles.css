@@ -65,7 +65,8 @@ label,
   color: var(--muted);
 }
 
-input {
+input,
+select {
   min-width: 0;
   width: 100%;
   height: 42px;
@@ -75,6 +76,10 @@ input {
   font: inherit;
   color: var(--text);
   background: #fff;
+}
+
+select {
+  cursor: pointer;
 }
 
 .view-mode {
@@ -101,6 +106,19 @@ input {
 }
 
 .view-mode input {
+  width: auto;
+  height: auto;
+}
+
+.checkbox-label {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.checkbox-label input {
   width: auto;
   height: auto;
 }

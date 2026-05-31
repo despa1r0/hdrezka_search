@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -11,7 +12,9 @@ PORT = 8000
 REZKA_BASE_URL = "https://hdrezka.ag/"
 DEFAULT_RESULT_LIMIT = 100
 MAX_RESULT_LIMIT = 300
+MAX_CANDIDATE_SCAN = 1000
 REQUEST_TIMEOUT = 12
+DEBUG = os.getenv("HDREZKA_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

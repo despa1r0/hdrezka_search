@@ -45,8 +45,16 @@
       </label>
 
       <label>
-        IMDb от
-        <input id="minRating" name="min_rating" type="number" min="0" max="10" step="0.1" placeholder="7.0">
+        Диапазон IMDb
+        <input id="ratingRange" name="rating_range" placeholder="8.0 - 5.0">
+      </label>
+
+      <label>
+        Сортировка
+        <select id="sortOrder" name="sort_order">
+          <option value="desc">От высокой</option>
+          <option value="asc">От низкой</option>
+        </select>
       </label>
 
       <fieldset class="view-mode">
@@ -60,6 +68,11 @@
           Текст
         </label>
       </fieldset>
+
+      <label class="checkbox-label">
+        <input id="debug" name="debug" type="checkbox" value="1">
+        Debug в терминал
+      </label>
 
       <button id="submitBtn" type="submit">Искать</button>
     </form>

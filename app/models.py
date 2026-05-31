@@ -17,6 +17,7 @@ class SearchItem:
     rating_source: str = ""
     genres: list[str] = field(default_factory=list)
     countries: list[str] = field(default_factory=list)
+    seed_genres: list[str] = field(default_factory=list)
     year: str = ""
     description: str = ""
 
