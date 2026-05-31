@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HdRezka фильтр</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main>
+    <h1>HdRezka фильтр</h1>
+
+    <form class="toolbar" id="searchForm">
+      <label>
+        Поиск
+        <input id="query" name="q" placeholder="Например: Детектив" required autocomplete="off">
+      </label>
+
+      <label>
+        Бан жанров
+        <input id="banGenres" name="ban_genres" placeholder="аниме, ужасы">
+      </label>
+
+      <label>
+        Бан стран
+        <input id="banCountries" name="ban_countries" placeholder="Россия, Индия">
+      </label>
+
+      <button id="submitBtn" type="submit">Искать</button>
+    </form>
+
+    <div id="status" class="status"></div>
+    <section id="results" class="grid"></section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

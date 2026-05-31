@@ -1,0 +1,3 @@
+HdRezkaApi
+beautifulsoup4
+requests
