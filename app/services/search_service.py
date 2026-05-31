@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from typing import Any
 
@@ -22,7 +23,9 @@ class SearchService:
     def search(self, params: dict[str, str]) -> tuple[int, dict[str, Any]]:
         query = params.get("q", "").strip()
         if not query:
-            return HTTPStatus.BAD_REQUEST, {"error": "Введите поисковый запрос."}
+            return HTTPStatus.BAD_REQUEST, {
+                "error": "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043f\u043e\u0438\u0441\u043a\u043e\u0432\u044b\u0439 \u0437\u0430\u043f\u0440\u043e\u0441."
+            }
 
         banned_genres = split_csv(params.get("ban_genres", ""))
         banned_countries = split_csv(params.get("ban_countries", ""))
@@ -40,9 +43,16 @@ class SearchService:
         }
 
     def _enrich_items(self, items: list[SearchItem], fallback_query: str) -> None:
-        for item in items:
-            self._apply_rezka_metadata(item)
-            self._apply_imdb_fallback(item, fallback_query)
+        if not items:
+            return
+
+        workers = min(12, len(items))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            list(executor.map(lambda item: self._enrich_item(item, fallback_query), items))
+
+    def _enrich_item(self, item: SearchItem, fallback_query: str) -> None:
+        self._apply_rezka_metadata(item)
+        self._apply_imdb_fallback(item, fallback_query)
 
     def _apply_rezka_metadata(self, item: SearchItem) -> None:
         try:
@@ -57,6 +67,12 @@ class SearchService:
         item.imdb_rating = metadata.get("imdbRating")
         item.image = item.image or metadata.get("image", "")
         item.original_title = metadata.get("originalTitle", "")
+
+        rezka_rating = metadata.get("rezkaRating")
+        if item.source_rating is None and rezka_rating is not None:
+            item.source_rating = rezka_rating
+            item.rating = rezka_rating
+            item.rating_source = "Rezka"
 
     def _apply_imdb_fallback(self, item: SearchItem, fallback_query: str) -> None:
         if item.rating is not None:
