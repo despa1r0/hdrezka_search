@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,6 +30,16 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/search":
             self._handle_search(parsed.query)
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+
+        if parsed.path == "/api/shutdown":
+            self._send_json(HTTPStatus.OK, {"status": "stopping"})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)

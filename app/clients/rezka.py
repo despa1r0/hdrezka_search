@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 from HdRezkaApi.search import HdRezkaSearch
 
-from app.config import CATALOG_RESULT_LIMIT, MAX_RESULTS, REQUEST_TIMEOUT, REZKA_BASE_URL, USER_AGENT
+from app.config import DEFAULT_RESULT_LIMIT, REQUEST_TIMEOUT, REZKA_BASE_URL, USER_AGENT
 from app.models import SearchItem
 from app.utils.text import get_attr, normalize, parse_rating, parse_year, split_csv
 
@@ -44,20 +44,20 @@ class RezkaClient:
         self.base_url = base_url.rstrip("/")
         self._search = HdRezkaSearch(base_url)
 
-    def search(self, query: str) -> list[SearchItem]:
-        genre_items = self._search_films_by_genre(query)
+    def search(self, query: str, limit: int = DEFAULT_RESULT_LIMIT) -> list[SearchItem]:
+        genre_items = self._search_films_by_genre(query, limit)
         if genre_items:
             return genre_items
 
-        return self._advanced_search(query)
+        return self._advanced_search(query, limit)
 
-    def _advanced_search(self, query: str) -> list[SearchItem]:
+    def _advanced_search(self, query: str, limit: int) -> list[SearchItem]:
         result = self._search(query, find_all=True)
         items: list[SearchItem] = []
         seen_urls: set[str] = set()
         page = 1
 
-        while len(items) < MAX_RESULTS:
+        while len(items) < limit:
             page_items = result.get_page(page)
             if not page_items:
                 break
@@ -67,25 +67,27 @@ class RezkaClient:
                 if item and item.url not in seen_urls:
                     seen_urls.add(item.url)
                     items.append(item)
-                if len(items) >= MAX_RESULTS:
+                if len(items) >= limit:
                     break
 
             page += 1
 
         return items
 
-    def _search_films_by_genre(self, query: str) -> list[SearchItem]:
-        slug = GENRE_PATHS.get(normalize(query))
-        if not slug:
+    def _search_films_by_genre(self, query: str, limit: int) -> list[SearchItem]:
+        slugs = self.genre_slugs(query)
+        if not slugs:
             return []
 
         items: list[SearchItem] = []
         seen_urls: set[str] = set()
         page = 1
 
-        while len(items) < CATALOG_RESULT_LIMIT:
-            page_url = self._catalog_page_url(slug, page)
-            page_items = self._fetch_catalog_page(page_url)
+        while len(items) < limit:
+            page_items: list[SearchItem] = []
+            for slug in slugs:
+                page_items.extend(self._fetch_catalog_page(self._catalog_page_url(slug, page)))
+
             if not page_items:
                 break
 
@@ -93,12 +95,20 @@ class RezkaClient:
                 if item.url not in seen_urls:
                     seen_urls.add(item.url)
                     items.append(item)
-                if len(items) >= CATALOG_RESULT_LIMIT:
+                if len(items) >= limit:
                     break
 
             page += 1
 
         return items
+
+    def genre_slugs(self, query: str) -> list[str]:
+        slugs: list[str] = []
+        for part in split_csv(query):
+            slug = GENRE_PATHS.get(normalize(part))
+            if slug and slug not in slugs:
+                slugs.append(slug)
+        return slugs
 
     def _catalog_page_url(self, slug: str, page: int) -> str:
         if page == 1:
@@ -152,8 +162,6 @@ class RezkaClient:
             image=str(get_attr(raw, "image", "") or ""),
             category=category,
             source_rating=source_rating,
-            rating=source_rating,
-            rating_source="Rezka" if source_rating is not None else "",
             year=parse_year(title, category),
         )
 
