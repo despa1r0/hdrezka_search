@@ -7,7 +7,7 @@ from typing import Any
 
 from app.clients.imdb import ImdbClient
 from app.clients.rezka import RezkaClient, fetch_page_metadata
-from app.config import DEFAULT_RESULT_LIMIT, MAX_CANDIDATE_SCAN, MAX_RESULT_LIMIT
+from app.config import DEFAULT_RESULT_LIMIT, MAX_RESULT_LIMIT
 from app.debug import debug_log
 from app.models import SearchItem
 from app.utils.text import normalize, parse_rating, split_csv, transliterate
@@ -29,7 +29,7 @@ class SearchService:
 
         options = self._parse_options(params, query)
         started = time.perf_counter()
-        accepted = self._collect_until_limit(query, options)
+        accepted = self._collect_single_pass(query, options)
         accepted = self._sort_items(accepted, options["sort_order"])
 
         return HTTPStatus.OK, {
@@ -87,32 +87,23 @@ class SearchService:
 
         return []
 
-    def _collect_until_limit(self, query: str, options: dict[str, Any]) -> list[SearchItem]:
+    def _collect_single_pass(self, query: str, options: dict[str, Any]) -> list[SearchItem]:
         accepted: list[SearchItem] = []
         seen_urls: set[str] = set()
-        scan_limit = min(MAX_CANDIDATE_SCAN, max(options["max_results"] * 4, options["max_results"]))
         candidate_limit = options["max_results"]
 
-        while len(accepted) < options["max_results"] and candidate_limit <= scan_limit:
-            debug_log(
-                f"search query={query!r} candidate_limit={candidate_limit} accepted={len(accepted)}",
-                options["debug"],
-            )
-            candidates = self.rezka_client.search(query, candidate_limit)
-            new_candidates = [item for item in candidates if item.url not in seen_urls]
-            if not new_candidates:
-                break
+        debug_log(
+            f"single-pass search query={query!r} candidate_limit={candidate_limit}",
+            options["debug"],
+        )
+        candidates = self.rezka_client.search(query, candidate_limit)
+        new_candidates = [item for item in candidates if item.url not in seen_urls]
+        self._enrich_items(new_candidates, options)
 
-            self._enrich_items(new_candidates, options)
-
-            for item in new_candidates:
-                seen_urls.add(item.url)
-                if self._matches_filters(item, options):
-                    accepted.append(item)
-                    if len(accepted) >= options["max_results"]:
-                        break
-
-            candidate_limit = min(candidate_limit * 2, scan_limit + 1)
+        for item in new_candidates:
+            seen_urls.add(item.url)
+            if self._matches_filters(item, options):
+                accepted.append(item)
 
         debug_log(f"done accepted={len(accepted)} scanned={len(seen_urls)}", options["debug"])
         return accepted
