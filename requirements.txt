@@ -1,3 +1,5 @@
 HdRezkaApi
 beautifulsoup4
+psycopg[binary]
+python-dotenv
 requests

@@ -3,20 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HdRezka фильтр</title>
+  <title>HdRezka DB Filter</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <main>
     <header class="topbar">
-      <h1>HdRezka фильтр</h1>
+      <h1>HdRezka DB Filter</h1>
       <button class="secondary" id="stopBtn" type="button">Остановить сервер</button>
     </header>
 
     <form class="toolbar" id="searchForm">
+      <label>
+        Пользователь
+        <select id="userSelect" name="user_id" required>
+          <option value="">Загрузка...</option>
+        </select>
+      </label>
+
       <label class="wide">
         Поиск
-        <input id="query" name="q" placeholder="Например: фантастика или детектив" required autocomplete="off">
+        <input id="query" name="query" placeholder="Например: фантастика или детектив" autocomplete="off">
+      </label>
+
+      <label>
+        Тип
+        <select id="contentType" name="content_type">
+          <option value="all">Любой</option>
+          <option value="film">Фильм</option>
+          <option value="series">Сериал</option>
+          <option value="cartoon">Мультфильм</option>
+          <option value="anime">Аниме</option>
+        </select>
       </label>
 
       <label>
@@ -40,20 +58,26 @@
       </label>
 
       <label>
-        Максимум
-        <input id="maxResults" name="max_results" type="number" min="1" max="300" value="100">
+        IMDb от
+        <input id="minImdb" name="min_imdb" type="number" min="0" max="10" step="0.1" placeholder="5.0">
       </label>
 
       <label>
-        Диапазон IMDb
-        <input id="ratingRange" name="rating_range" placeholder="8.0 - 5.0">
+        IMDb до
+        <input id="maxImdb" name="max_imdb" type="number" min="0" max="10" step="0.1" placeholder="8.0">
+      </label>
+
+      <label>
+        Лимит
+        <input id="limit" name="limit" type="number" min="1" max="300" value="100">
       </label>
 
       <label>
         Сортировка
-        <select id="sortOrder" name="sort_order">
+        <select id="sortMode" name="sort_mode">
           <option value="desc">От высокой</option>
           <option value="asc">От низкой</option>
+          <option value="title">По названию</option>
         </select>
       </label>
 
@@ -68,6 +92,11 @@
           Текст
         </label>
       </fieldset>
+
+      <label class="checkbox-label">
+        <input id="excludeSeen" name="exclude_seen" type="checkbox" value="1" checked>
+        Не повторять показанные
+      </label>
 
       <label class="checkbox-label">
         <input id="debug" name="debug" type="checkbox" value="1">

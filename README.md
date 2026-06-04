@@ -1,42 +1,62 @@
-# HdRezka Filter
+# HdRezka DB Filter
 
-Локальная страница поиска по HdRezka с сортировкой по рейтингу и бан-листом жанров/стран.
+Локальная страница поиска по собственной PostgreSQL-базе фильмов. Обычный поиск не делает live-запросы к Rezka или IMDb: данные сначала должны быть загружены в БД.
 
 ## Возможности
 
-- поиск через `HdRezkaApi`;
-- жанровые запросы вроде `фантастика` и `детектив` собираются из каталога фильмов, а не из коротких ajax-подсказок;
-- добор жанров, стран, постера и оригинального названия со страницы тайтла;
-- сортировка по IMDb-рейтингу;
-- режим карточек и текстовый режим без изображений;
-- пользовательский лимит результатов;
-- фильтр диапазона IMDb-рейтинга, например `8.0 - 5.0`;
-- сортировка от высокой оценки к низкой и от низкой к высокой;
-- включающие фильтры и бан-листы жанров/стран через запятую.
+- пользователи `test1` и `test2`;
+- отдельные состояния фильмов для каждого пользователя: `seen`, `hidden`, `favorite`, `watchlist`;
+- история показанных результатов по `user_id + query_hash`;
+- фильтры жанров и стран на включение;
+- бан-листы жанров и стран;
+- фильтр IMDb min/max;
+- сортировка IMDb от высокой или от низкой;
+- режим карточек и текстовый режим;
+- локальные seed/reset/test скрипты без сетевых запросов.
 
-По жанровым запросам приложение берет заданное число кандидатов из каталога Rezka и один раз пропускает их через фильтры. Максимальный лимит в интерфейсе - 300. Если фильтры жесткие, итоговых результатов может быть меньше лимита: это сделано специально, чтобы не слать сотни дополнительных запросов и не ловить бан.
+## Установка
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" -m pip install -r requirements.txt
+```
+
+## База
+
+```powershell
+$env:DATABASE_URL = "postgresql://hdrezka_user:password@localhost:5432/hdrezka_filter"
+psql $env:DATABASE_URL -f migrations/001_init.sql
+```
+
+Тестовые данные:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" tests_local/seed_test_data.py
+```
+
+Сброс тестовых фильмов и пользовательских состояний:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" tests_local/reset_test_db.py
+```
 
 ## Запуск
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" -m pip install -r requirements.txt
 & "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" main.py
 ```
 
-После запуска открой:
+Открыть:
 
 ```text
 http://127.0.0.1:8000/
 ```
 
-Для debug-логов запускай сервер прямо в терминале:
+Debug:
 
 ```powershell
 $env:HDREZKA_DEBUG = "1"
 & "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" main.py
 ```
-
-Также можно включить чекбокс `Debug в терминал` в интерфейсе для конкретного запроса.
 
 ## Остановка сервера
 
@@ -48,27 +68,36 @@ $env:HDREZKA_DEBUG = "1"
 .\stop_server.ps1
 ```
 
-Подробности по текущему состоянию и планам лежат в [PROJECT_STATUS.md](PROJECT_STATUS.md).
+## Проверки
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" -m py_compile main.py app/**/*.py tests_local/*.py
+& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" tests_local/test_search_logic.py
+```
+
+`test_search_logic.py` требует поднятый PostgreSQL и примененную миграцию.
 
 ## Структура
 
 ```text
 app/
-  clients/
-    imdb.py          # IMDb fallback rating
-    rezka.py         # Rezka search and metadata scraping
-  services/
-    search_service.py
+  clients/              # Rezka/IMDb clients for future crawler work
+  repositories/         # SQL repository layer
+  services/             # search, state, query hash
   utils/
-    text.py
   config.py
-  models.py
+  database.py
   server.py
+migrations/
+  001_init.sql
 static/
   app.js
   styles.css
 templates/
   index.html
+tests_local/
 main.py
 requirements.txt
 ```
+
+Подробный статус и дальнейшие этапы: [PROJECT_STATUS.md](PROJECT_STATUS.md).

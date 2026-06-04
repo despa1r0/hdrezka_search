@@ -140,6 +140,29 @@ button.secondary {
   border: 1px solid var(--line);
 }
 
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.actions button {
+  width: auto;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  background: #f7fafc;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.actions button:hover {
+  border-color: #9bbbd8;
+  color: var(--accent);
+}
+
 button:disabled {
   opacity: .65;
   cursor: progress;
@@ -232,6 +255,10 @@ button:disabled {
   padding: 10px 12px;
 }
 
+.text-row .actions {
+  margin-top: 8px;
+}
+
 .text-title {
   display: flex;
   gap: 8px;
@@ -273,5 +300,9 @@ button:disabled {
 
   button {
     width: 100%;
+  }
+
+  .actions button {
+    width: auto;
   }
 }

@@ -1,71 +1,325 @@
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from typing import Any
 
-from app.clients.imdb import ImdbClient
-from app.clients.rezka import RezkaClient, fetch_page_metadata
 from app.config import DEFAULT_RESULT_LIMIT, MAX_RESULT_LIMIT
+from app.database import fetch_all
 from app.debug import debug_log
-from app.models import SearchItem
-from app.utils.text import normalize, parse_rating, split_csv, transliterate
+from app.repositories.shown_repository import mark_as_shown
+from app.services.query_hash_service import build_query_hash
+from app.utils.text import normalize, parse_rating, split_csv
+
+GENRE_ALIASES = {
+    "биография": "Биографии",
+    "биографии": "Биографии",
+    "боевик": "Боевики",
+    "боевики": "Боевики",
+    "вестерн": "Вестерны",
+    "вестерны": "Вестерны",
+    "военный": "Военные",
+    "военные": "Военные",
+    "детектив": "Детективы",
+    "детективы": "Детективы",
+    "драма": "Драмы",
+    "драмы": "Драмы",
+    "исторический": "Исторические",
+    "исторические": "Исторические",
+    "комедия": "Комедии",
+    "комедии": "Комедии",
+    "криминал": "Криминал",
+    "мелодрама": "Мелодрамы",
+    "мелодрамы": "Мелодрамы",
+    "приключения": "Приключения",
+    "семейный": "Семейные",
+    "семейные": "Семейные",
+    "триллер": "Триллеры",
+    "триллеры": "Триллеры",
+    "ужасы": "Ужасы",
+    "фантастика": "Фантастика",
+    "фэнтези": "Фэнтези",
+}
 
 
 class SearchService:
-    def __init__(
-        self,
-        rezka_client: RezkaClient | None = None,
-        imdb_client: ImdbClient | None = None,
-    ) -> None:
-        self.rezka_client = rezka_client or RezkaClient()
-        self.imdb_client = imdb_client or ImdbClient()
-
     def search(self, params: dict[str, str]) -> tuple[int, dict[str, Any]]:
-        query = params.get("q", "").strip()
-        if not query:
-            return HTTPStatus.BAD_REQUEST, {"error": "Введите поисковый запрос."}
-
-        options = self._parse_options(params, query)
         started = time.perf_counter()
-        accepted = self._collect_single_pass(query, options)
-        accepted = self._sort_items(accepted, options["sort_order"])
+        try:
+            options = self._parse_options(params)
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+
+        try:
+            rows = self._search_rows(options)
+            movie_ids = [int(row["id"]) for row in rows]
+            mark_as_shown(options["user_id"], options["query_hash"], movie_ids)
+        except Exception as exc:
+            debug_log(f"db search failed error={exc}", options["debug"])
+            return HTTPStatus.SERVICE_UNAVAILABLE, {
+                "error": (
+                    "PostgreSQL недоступен или схема не применена. "
+                    f"Обычный поиск не падает обратно на Rezka/IMDb. Детали: {exc}"
+                )
+            }
 
         return HTTPStatus.OK, {
-            "query": query,
-            "count": len(accepted),
+            "query": options["original_query"],
+            "queryHash": options["query_hash"],
+            "count": len(rows),
             "elapsed": round(time.perf_counter() - started, 2),
-            "maxResults": options["max_results"],
+            "limit": options["limit"],
             "ratingSource": "IMDb",
-            "items": [item.as_dict() for item in accepted[: options["max_results"]]],
+            "items": [self._row_to_item(row) for row in rows],
         }
 
-    def _parse_options(self, params: dict[str, str], query: str) -> dict[str, Any]:
-        rating_min, rating_max = self._parse_rating_range(params)
-        return {
-            "debug": params.get("debug", "").lower() in {"1", "true", "on", "yes"},
-            "include_genres": self._include_genres(params, query),
+    def _parse_options(self, params: dict[str, str]) -> dict[str, Any]:
+        user_id = self._parse_positive_int(params.get("user_id", ""), "user_id")
+        query = params.get("query", params.get("q", "")).strip()
+        include_genres = self._canonical_genres(split_csv(params.get("include_genres", "")))
+        text_query = query
+
+        if query and not include_genres:
+            query_genres = self._genres_from_query(query)
+            if query_genres:
+                include_genres = query_genres
+                text_query = ""
+
+        min_imdb, max_imdb = self._parse_rating_bounds(params)
+        options = {
+            "user_id": user_id,
+            "original_query": query,
+            "query": text_query,
+            "include_genres": include_genres,
+            "ban_genres": self._canonical_genres(split_csv(params.get("ban_genres", ""))),
             "include_countries": split_csv(params.get("include_countries", "")),
-            "banned_genres": split_csv(params.get("ban_genres", "")),
-            "banned_countries": split_csv(params.get("ban_countries", "")),
-            "max_results": self._parse_result_limit(params.get("max_results", "")),
-            "rating_min": rating_min,
-            "rating_max": rating_max,
-            "sort_order": params.get("sort_order", "desc"),
+            "ban_countries": split_csv(params.get("ban_countries", "")),
+            "min_imdb": min_imdb,
+            "max_imdb": max_imdb,
+            "content_type": self._content_type(params.get("content_type", "")),
+            "sort_mode": params.get("sort_mode", params.get("sort_order", "desc")).strip().lower(),
+            "limit": self._parse_limit(params.get("limit", params.get("max_results", ""))),
+            "exclude_seen": self._parse_bool(params.get("exclude_seen", "1")),
+            "debug": self._parse_bool(params.get("debug", "")),
+        }
+        options["query_hash"] = build_query_hash(options)
+        return options
+
+    def _search_rows(self, options: dict[str, Any]) -> list[dict[str, Any]]:
+        where = ["1 = 1"]
+        sql_params: dict[str, Any] = {
+            "user_id": options["user_id"],
+            "query_hash": options["query_hash"],
+            "limit": options["limit"],
         }
 
-    def _parse_result_limit(self, value: str) -> int:
-        try:
-            requested = int(value)
-        except (TypeError, ValueError):
-            requested = DEFAULT_RESULT_LIMIT
+        if options["query"]:
+            where.append(
+                """
+                (
+                    m.title_ru ILIKE %(query_like)s
+                    OR COALESCE(m.title_original, '') ILIKE %(query_like)s
+                    OR COALESCE(m.description, '') ILIKE %(query_like)s
+                )
+                """
+            )
+            sql_params["query_like"] = f"%{options['query']}%"
 
-        return max(1, min(requested, MAX_RESULT_LIMIT))
+        if options["content_type"]:
+            where.append("m.content_type = %(content_type)s")
+            sql_params["content_type"] = options["content_type"]
 
-    def _parse_rating_range(self, params: dict[str, str]) -> tuple[float | None, float | None]:
+        if options["min_imdb"] is not None:
+            where.append("m.imdb_rating >= %(min_imdb)s")
+            sql_params["min_imdb"] = options["min_imdb"]
+
+        if options["max_imdb"] is not None:
+            where.append("m.imdb_rating <= %(max_imdb)s")
+            sql_params["max_imdb"] = options["max_imdb"]
+
+        self._append_include_filter(
+            where,
+            sql_params,
+            table="movie_genres",
+            column="genre",
+            option_name="include_genres",
+            values=options["include_genres"],
+        )
+        self._append_include_filter(
+            where,
+            sql_params,
+            table="movie_countries",
+            column="country",
+            option_name="include_countries",
+            values=options["include_countries"],
+        )
+        self._append_ban_filter(
+            where,
+            sql_params,
+            table="movie_genres",
+            column="genre",
+            option_name="ban_genres",
+            values=options["ban_genres"],
+        )
+        self._append_ban_filter(
+            where,
+            sql_params,
+            table="movie_countries",
+            column="country",
+            option_name="ban_countries",
+            values=options["ban_countries"],
+        )
+
+        if options["exclude_seen"]:
+            where.append(
+                """
+                NOT EXISTS (
+                    SELECT 1
+                    FROM shown_items si
+                    WHERE si.movie_id = m.id
+                      AND si.user_id = %(user_id)s
+                      AND si.query_hash = %(query_hash)s
+                )
+                """
+            )
+
+        where.append(
+            """
+            NOT EXISTS (
+                SELECT 1
+                FROM user_movie_state ums
+                WHERE ums.movie_id = m.id
+                  AND ums.user_id = %(user_id)s
+                  AND ums.state IN ('seen', 'hidden')
+            )
+            """
+        )
+
+        order_by = self._order_by(options["sort_mode"])
+        sql = f"""
+            SELECT
+                m.id,
+                m.rezka_url,
+                m.title_ru,
+                m.title_original,
+                m.year,
+                m.content_type,
+                m.imdb_rating,
+                m.poster_url,
+                m.description,
+                COALESCE(
+                    array_agg(DISTINCT mg.genre) FILTER (WHERE mg.genre IS NOT NULL),
+                    '{{}}'
+                ) AS genres,
+                COALESCE(
+                    array_agg(DISTINCT mc.country) FILTER (WHERE mc.country IS NOT NULL),
+                    '{{}}'
+                ) AS countries
+            FROM movies m
+            LEFT JOIN movie_genres mg ON mg.movie_id = m.id
+            LEFT JOIN movie_countries mc ON mc.movie_id = m.id
+            WHERE {" AND ".join(where)}
+            GROUP BY m.id
+            {order_by}
+            LIMIT %(limit)s
+        """
+        debug_log(f"sql search params={sql_params}", options["debug"])
+        return fetch_all(sql, sql_params)
+
+    def _append_include_filter(
+        self,
+        where: list[str],
+        params: dict[str, Any],
+        *,
+        table: str,
+        column: str,
+        option_name: str,
+        values: list[str],
+    ) -> None:
+        normalized = self._normalize_list(values)
+        if not normalized:
+            return
+        params[option_name] = normalized
+        params[f"{option_name}_count"] = len(normalized)
+        where.append(
+            f"""
+            m.id IN (
+                SELECT movie_id
+                FROM {table}
+                WHERE lower({column}) = ANY(%({option_name})s)
+                GROUP BY movie_id
+                HAVING COUNT(DISTINCT lower({column})) = %({option_name}_count)s
+            )
+            """
+        )
+
+    def _append_ban_filter(
+        self,
+        where: list[str],
+        params: dict[str, Any],
+        *,
+        table: str,
+        column: str,
+        option_name: str,
+        values: list[str],
+    ) -> None:
+        normalized = self._normalize_list(values)
+        if not normalized:
+            return
+        params[option_name] = normalized
+        where.append(
+            f"""
+            NOT EXISTS (
+                SELECT 1
+                FROM {table} banned
+                WHERE banned.movie_id = m.id
+                  AND lower(banned.{column}) = ANY(%({option_name})s)
+            )
+            """
+        )
+
+    def _row_to_item(self, row: dict[str, Any]) -> dict[str, Any]:
+        rating = float(row["imdb_rating"]) if row["imdb_rating"] is not None else None
+        return {
+            "id": row["id"],
+            "movieId": row["id"],
+            "title": row["title_ru"],
+            "url": row["rezka_url"],
+            "originalTitle": row["title_original"] or "",
+            "image": row["poster_url"] or "",
+            "category": row["content_type"] or "",
+            "contentType": row["content_type"] or "",
+            "sourceRating": None,
+            "imdbRating": rating,
+            "rating": rating,
+            "ratingSource": "IMDb" if rating is not None else "",
+            "genres": list(row["genres"] or []),
+            "countries": list(row["countries"] or []),
+            "year": str(row["year"] or ""),
+            "description": row["description"] or "",
+        }
+
+    def _genres_from_query(self, query: str) -> list[str]:
+        parts = split_csv(query)
+        if not parts:
+            return []
+        genres: list[str] = []
+        for part in parts:
+            genre = GENRE_ALIASES.get(normalize(part))
+            if not genre:
+                return []
+            genres.append(genre)
+        return genres
+
+    def _canonical_genres(self, values: list[str]) -> list[str]:
+        return [GENRE_ALIASES.get(normalize(value), value.strip()) for value in values if value.strip()]
+
+    def _parse_rating_bounds(self, params: dict[str, str]) -> tuple[float | None, float | None]:
+        min_imdb = parse_rating(params.get("min_imdb", params.get("min_rating", "")))
+        max_imdb = parse_rating(params.get("max_imdb", params.get("max_rating", "")))
         rating_range = params.get("rating_range", "").strip()
-        if rating_range:
+
+        if rating_range and (min_imdb is None and max_imdb is None):
             parts = [part for part in rating_range.replace(",", ".").split("-") if part.strip()]
             ratings = [parse_rating(part) for part in parts]
             ratings = [rating for rating in ratings if rating is not None]
@@ -74,129 +328,37 @@ class SearchService:
             if len(ratings) == 1:
                 return ratings[0], None
 
-        return parse_rating(params.get("min_rating", "")), parse_rating(params.get("max_rating", ""))
+        return min_imdb, max_imdb
 
-    def _include_genres(self, params: dict[str, str], query: str) -> list[str]:
-        include_genres = split_csv(params.get("include_genres", ""))
-        if include_genres:
-            return include_genres
-
-        query_genres = split_csv(query)
-        if len(query_genres) > 1 and self.rezka_client.genre_slugs(query):
-            return query_genres
-
-        return []
-
-    def _collect_single_pass(self, query: str, options: dict[str, Any]) -> list[SearchItem]:
-        accepted: list[SearchItem] = []
-        seen_urls: set[str] = set()
-        candidate_limit = options["max_results"]
-
-        debug_log(
-            f"single-pass search query={query!r} candidate_limit={candidate_limit}",
-            options["debug"],
-        )
-        candidates = self.rezka_client.search(query, candidate_limit)
-        new_candidates = [item for item in candidates if item.url not in seen_urls]
-        self._enrich_items(new_candidates, options)
-
-        for item in new_candidates:
-            seen_urls.add(item.url)
-            if self._matches_filters(item, options):
-                accepted.append(item)
-
-        debug_log(f"done accepted={len(accepted)} scanned={len(seen_urls)}", options["debug"])
-        return accepted
-
-    def _enrich_items(self, items: list[SearchItem], options: dict[str, Any]) -> None:
-        if not items:
-            return
-
-        workers = min(12, len(items))
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            list(executor.map(lambda item: self._enrich_item(item, options), items))
-
-    def _enrich_item(self, item: SearchItem, options: dict[str, Any]) -> None:
-        self._apply_rezka_metadata(item, options["debug"])
-        self._apply_imdb_rating(item, options["debug"])
-
-    def _apply_rezka_metadata(self, item: SearchItem, debug: bool) -> None:
+    def _parse_limit(self, value: str) -> int:
         try:
-            metadata = fetch_page_metadata(item.url)
-        except Exception as exc:
-            debug_log(f"metadata failed url={item.url} error={exc}", debug)
-            if item.seed_genres and not item.genres:
-                item.genres = item.seed_genres
-            return
+            requested = int(value)
+        except (TypeError, ValueError):
+            requested = DEFAULT_RESULT_LIMIT
+        return max(1, min(requested, MAX_RESULT_LIMIT))
 
-        item.genres = metadata.get("genres") or item.genres or item.seed_genres
-        item.countries = metadata.get("countries") or []
-        item.year = item.year or metadata.get("year", "")
-        item.description = metadata.get("description", "")
-        item.image = item.image or metadata.get("image", "")
-        item.original_title = metadata.get("originalTitle", "")
-        item.source_rating = item.source_rating or metadata.get("rezkaRating")
-
-    def _apply_imdb_rating(self, item: SearchItem, debug: bool) -> None:
-        titles = [
-            item.original_title,
-            item.title,
-            transliterate(item.title),
-        ]
+    def _parse_positive_int(self, value: str, field_name: str) -> int:
         try:
-            item.imdb_rating = self.imdb_client.fetch_first_rating(titles, item.year)
-        except Exception as exc:
-            debug_log(f"imdb failed title={item.title!r} year={item.year!r} error={exc}", debug)
-            item.imdb_rating = None
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} is required") from exc
+        if parsed <= 0:
+            raise ValueError(f"{field_name} must be positive")
+        return parsed
 
-        item.rating = item.imdb_rating
-        item.rating_source = "IMDb" if item.imdb_rating is not None else ""
+    def _parse_bool(self, value: str) -> bool:
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
-    def _matches_filters(self, item: SearchItem, options: dict[str, Any]) -> bool:
-        return (
-            self._has_all(item.genres, options["include_genres"])
-            and self._has_all(item.countries, options["include_countries"])
-            and not self._has_any(item.genres, options["banned_genres"])
-            and not self._has_any(item.countries, options["banned_countries"])
-            and self._passes_rating_range(item, options["rating_min"], options["rating_max"])
-        )
+    def _content_type(self, value: str) -> str:
+        clean = value.strip().lower()
+        return "" if clean in {"", "all", "any"} else clean
 
-    def _passes_rating_range(
-        self,
-        item: SearchItem,
-        rating_min: float | None,
-        rating_max: float | None,
-    ) -> bool:
-        if rating_min is None and rating_max is None:
-            return True
-        if item.rating is None:
-            return False
-        if rating_min is not None and item.rating < rating_min:
-            return False
-        if rating_max is not None and item.rating > rating_max:
-            return False
-        return True
+    def _normalize_list(self, values: list[str]) -> list[str]:
+        return sorted({normalize(value) for value in values if value.strip()})
 
-    def _sort_items(self, items: list[SearchItem], sort_order: str) -> list[SearchItem]:
-        reverse = sort_order != "asc"
-        rated = [item for item in items if item.rating is not None]
-        unrated = [item for item in items if item.rating is None]
-        rated = sorted(rated, key=lambda item: (item.rating or 0.0, item.title), reverse=reverse)
-        return rated + sorted(unrated, key=lambda item: item.title)
-
-    def _has_any(self, values: list[str], needles: list[str]) -> bool:
-        normalized_values = [normalize(value) for value in values]
-        normalized_needles = [normalize(value) for value in needles if value.strip()]
-        return any(
-            needle in value
-            for needle in normalized_needles
-            for value in normalized_values
-        )
-
-    def _has_all(self, values: list[str], needles: list[str]) -> bool:
-        normalized_values = [normalize(value) for value in values]
-        normalized_needles = [normalize(value) for value in needles if value.strip()]
-        return all(
-            any(needle in value for value in normalized_values)
-            for needle in normalized_needles
-        )
+    def _order_by(self, sort_mode: str) -> str:
+        if sort_mode == "asc":
+            return "ORDER BY m.imdb_rating ASC NULLS LAST, m.title_ru ASC"
+        if sort_mode == "title":
+            return "ORDER BY m.title_ru ASC"
+        return "ORDER BY m.imdb_rating DESC NULLS LAST, m.title_ru ASC"
