@@ -361,4 +361,6 @@ class SearchService:
             return "ORDER BY m.imdb_rating ASC NULLS LAST, m.title_ru ASC"
         if sort_mode == "title":
             return "ORDER BY m.title_ru ASC"
+        if sort_mode == "random":
+            return "ORDER BY random()"
         return "ORDER BY m.imdb_rating DESC NULLS LAST, m.title_ru ASC"

@@ -1,5 +1,6 @@
-HdRezkaApi
 beautifulsoup4
+fastapi
 psycopg[binary]
 python-dotenv
 requests
+uvicorn[standard]

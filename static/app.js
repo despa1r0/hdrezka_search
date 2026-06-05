@@ -2,8 +2,14 @@ const form = document.getElementById("searchForm");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const button = document.getElementById("submitBtn");
-const stopBtn = document.getElementById("stopBtn");
+const crawlBtn = document.getElementById("crawlBtn");
 const userSelect = document.getElementById("userSelect");
+const sortModeSelect = document.getElementById("sortMode");
+const viewModeInputs = Array.from(document.querySelectorAll("input[name='view_mode']"));
+
+let currentItems = [];
+let lastSearchParams = null;
+let lastResultMeta = null;
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
   "&": "&amp;",
@@ -89,6 +95,48 @@ const renderResults = (items, mode) => {
     .join("");
 };
 
+const selectedMode = () => {
+  const selected = viewModeInputs.find((input) => input.checked);
+  return selected?.value || "cards";
+};
+
+const paramsFromForm = () => {
+  const formData = new FormData(form);
+  formData.delete("view_mode");
+
+  if (!formData.get("exclude_seen")) {
+    formData.set("exclude_seen", "0");
+  }
+
+  return new URLSearchParams(formData);
+};
+
+const runSearch = async (params, mode, { clear = true } = {}) => {
+  button.disabled = true;
+  if (clear) {
+    resultsEl.innerHTML = "";
+  }
+  setStatus("Ищу в локальной PostgreSQL-базе...");
+
+  try {
+    const response = await fetch(`/api/search?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Ошибка поиска");
+    }
+
+    currentItems = data.items;
+    lastSearchParams = new URLSearchParams(params);
+    lastResultMeta = data;
+    renderResults(currentItems, mode);
+    setStatus(`Найдено: ${data.count}. Источник рейтинга: IMDb. Время: ${data.elapsed} сек.`);
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+};
+
 const loadUsers = async () => {
   try {
     const response = await fetch("/api/users");
@@ -109,32 +157,54 @@ const loadUsers = async () => {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  const formData = new FormData(form);
-  const mode = formData.get("view_mode") || "cards";
-  formData.delete("view_mode");
+  const mode = selectedMode();
+  const params = paramsFromForm();
+  await runSearch(params, mode);
+});
 
-  if (!formData.get("exclude_seen")) {
-    formData.set("exclude_seen", "0");
+viewModeInputs.forEach((input) => {
+  input.addEventListener("change", () => {
+    renderResults(currentItems, selectedMode());
+    if (lastResultMeta) {
+      setStatus(`Найдено: ${lastResultMeta.count}. Источник рейтинга: IMDb. Время: ${lastResultMeta.elapsed} сек.`);
+    }
+  });
+});
+
+sortModeSelect.addEventListener("change", async () => {
+  if (!lastSearchParams) {
+    return;
   }
+  const params = new URLSearchParams(lastSearchParams);
+  params.set("sort_mode", sortModeSelect.value);
+  await runSearch(params, selectedMode());
+});
 
-  const params = new URLSearchParams(formData);
-  button.disabled = true;
-  resultsEl.innerHTML = "";
-  setStatus("Ищу в локальной PostgreSQL-базе...");
+crawlBtn.addEventListener("click", async () => {
+  crawlBtn.disabled = true;
+  const crawlParams = paramsFromForm();
+  setStatus("Дозагружаю подходящие фильмы Rezka в локальную БД...");
 
   try {
-    const response = await fetch(`/api/search?${params.toString()}`);
+    const response = await fetch("/api/crawl", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(crawlParams)),
+    });
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.error || "Ошибка поиска");
+      throw new Error(data.error || "Crawler не смог дозагрузить фильмы");
     }
 
-    renderResults(data.items, mode);
-    setStatus(`Найдено: ${data.count}. Источник рейтинга: IMDb. Время: ${data.elapsed} сек.`);
+    const stats = data.stats || {};
+    setStatus(`Дозагружено: ${stats.saved || 0}. Пропущено: ${stats.skipped || 0}. Страниц: ${stats.pages || 0}. Ошибок: ${stats.errors || 0}.`);
+    if (lastSearchParams) {
+      await runSearch(lastSearchParams, selectedMode(), { clear: false });
+    }
   } catch (error) {
     setStatus(error.message, true);
   } finally {
-    button.disabled = false;
+    crawlBtn.disabled = false;
   }
 });
 
@@ -173,6 +243,7 @@ resultsEl.addEventListener("click", async (event) => {
 
     if (state === "seen" || state === "hidden") {
       result?.remove();
+      currentItems = currentItems.filter((item) => String(item.movieId ?? item.id) !== String(movieId));
       setStatus(state === "seen" ? "Фильм помечен как просмотренный." : "Фильм скрыт.");
     } else {
       actionButton.textContent = state === "favorite" ? "В избранном" : "В списке";
@@ -181,18 +252,6 @@ resultsEl.addEventListener("click", async (event) => {
   } catch (error) {
     actionButton.disabled = false;
     setStatus(error.message, true);
-  }
-});
-
-stopBtn.addEventListener("click", async () => {
-  stopBtn.disabled = true;
-  setStatus("Останавливаю локальный сервер...");
-
-  try {
-    await fetch("/api/shutdown", { method: "POST" });
-    setStatus("Сервер остановлен. Эту вкладку можно закрыть.");
-  } catch (error) {
-    setStatus("Сервер остановлен или соединение уже закрыто.");
   }
 });
 

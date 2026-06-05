@@ -1,156 +1,159 @@
 from __future__ import annotations
 
-import json
 import threading
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from mimetypes import guess_type
-from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs
 
-from app.config import HOST, PORT, STATIC_DIR, TEMPLATES_DIR
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.config import (
+    CRAWLER_LOAD_MORE_IMDB_ITEM_LIMIT,
+    CRAWLER_LOAD_MORE_ITEM_LIMIT,
+    CRAWLER_LOAD_MORE_PAGE_LIMIT,
+    CRAWLER_LOAD_MORE_SLEEP_SECONDS,
+    HOST,
+    PORT,
+    STATIC_DIR,
+    TEMPLATES_DIR,
+)
+from app.crawler import RezkaCrawler, filters_from_params, genre_slugs_from_params, section_from_params
 from app.repositories.user_repository import ensure_test_users, get_all_users
 from app.services.search_service import SearchService
 from app.services.user_state_service import apply_movie_state
 
+app = FastAPI(title="HdRezka DB Filter")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+search_service = SearchService()
+crawl_lock = threading.Lock()
 
-class AppHandler(BaseHTTPRequestHandler):
-    search_service = SearchService()
 
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
+@app.get("/")
+@app.get("/index.html")
+def index() -> FileResponse:
+    return FileResponse(TEMPLATES_DIR / "index.html", media_type="text/html; charset=utf-8")
 
-        if parsed.path in {"/", "/index.html"}:
-            self._send_file(TEMPLATES_DIR / "index.html", "text/html; charset=utf-8")
-            return
 
-        if parsed.path.startswith("/static/"):
-            self._send_static_file(parsed.path)
-            return
-
-        if parsed.path == "/api/users":
-            self._handle_users()
-            return
-
-        if parsed.path == "/api/search":
-            self._handle_search(parsed.query)
-            return
-
-        self.send_error(HTTPStatus.NOT_FOUND)
-
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-
-        if parsed.path == "/api/movie-state":
-            self._handle_movie_state()
-            return
-
-        if parsed.path == "/api/shutdown":
-            self._send_json(HTTPStatus.OK, {"status": "stopping"})
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
-            return
-
-        self.send_error(HTTPStatus.NOT_FOUND)
-
-    def _handle_users(self) -> None:
-        try:
-            ensure_test_users()
-            users = get_all_users()
-        except Exception as exc:
-            self._send_json(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                {
-                    "error": (
-                        "PostgreSQL недоступен или схема не применена. "
-                        f"Детали: {exc}"
-                    )
-                },
-            )
-            return
-
-        self._send_json(HTTPStatus.OK, {"users": users})
-
-    def _handle_search(self, query: str) -> None:
-        params = {
-            key: values[-1]
-            for key, values in parse_qs(query, keep_blank_values=True).items()
-        }
-        status, payload = self.search_service.search(params)
-        self._send_json(status, payload)
-
-    def _handle_movie_state(self) -> None:
-        try:
-            payload = self._read_request_payload()
-            user_id = int(payload.get("user_id", ""))
-            movie_id = int(payload.get("movie_id", payload.get("movieId", "")))
-            state = str(payload.get("state", "")).strip()
-            action = str(payload.get("action", "set")).strip() or "set"
-            apply_movie_state(user_id, movie_id, state, action)
-        except Exception as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            return
-
-        self._send_json(
-            HTTPStatus.OK,
+@app.get("/api/users")
+def api_users() -> JSONResponse:
+    try:
+        ensure_test_users()
+        users = get_all_users()
+    except Exception as exc:
+        return _json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
             {
-                "ok": True,
-                "user_id": user_id,
-                "movie_id": movie_id,
-                "state": state,
-                "action": action,
+                "error": (
+                    "PostgreSQL недоступен или схема не применена. "
+                    f"Детали: {exc}"
+                )
             },
         )
 
-    def _read_request_payload(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(length).decode("utf-8") if length else ""
-        content_type = self.headers.get("Content-Type", "")
+    return _json(HTTPStatus.OK, {"users": users})
 
-        if "application/json" in content_type:
-            data = json.loads(raw or "{}")
-            if not isinstance(data, dict):
-                raise ValueError("JSON body must be an object")
-            return data
 
-        parsed = parse_qs(raw, keep_blank_values=True)
-        return {key: values[-1] for key, values in parsed.items()}
+@app.get("/api/search")
+def api_search(request: Request) -> JSONResponse:
+    params = {key: value for key, value in request.query_params.items()}
+    status, payload = search_service.search(params)
+    return _json(status, payload)
 
-    def _send_static_file(self, request_path: str) -> None:
-        relative_path = request_path.removeprefix("/static/").replace("/", "\\")
-        path = (STATIC_DIR / relative_path).resolve()
 
-        if not path.is_file() or STATIC_DIR.resolve() not in path.parents:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
+@app.post("/api/movie-state")
+async def api_movie_state(request: Request) -> JSONResponse:
+    try:
+        payload = await _read_request_payload(request)
+        user_id = int(payload.get("user_id", ""))
+        movie_id = int(payload.get("movie_id", payload.get("movieId", "")))
+        state = str(payload.get("state", "")).strip()
+        action = str(payload.get("action", "set")).strip() or "set"
+        apply_movie_state(user_id, movie_id, state, action)
+    except Exception as exc:
+        return _json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
-        content_type = guess_type(path.name)[0] or "application/octet-stream"
-        if content_type.startswith("text/") or content_type == "application/javascript":
-            content_type += "; charset=utf-8"
+    return _json(
+        HTTPStatus.OK,
+        {
+            "ok": True,
+            "user_id": user_id,
+            "movie_id": movie_id,
+            "state": state,
+            "action": action,
+        },
+    )
 
-        self._send_file(path, content_type)
 
-    def _send_file(self, path: Path, content_type: str) -> None:
-        payload = path.read_bytes()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+@app.post("/api/crawl")
+async def api_crawl(request: Request) -> JSONResponse:
+    if not crawl_lock.acquire(blocking=False):
+        return _json(
+            HTTPStatus.CONFLICT,
+            {"error": "Crawler уже работает. Дождись завершения текущей дозагрузки."},
+        )
 
-    def _send_json(self, status: int, data: dict[str, Any]) -> None:
-        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+    try:
+        params = await _read_request_payload(request)
+        genre_slugs = genre_slugs_from_params(params)
+        source = "genres" if genre_slugs else "new"
+        section = section_from_params(params)
+        crawler = RezkaCrawler(
+            page_limit=CRAWLER_LOAD_MORE_PAGE_LIMIT,
+            item_limit=CRAWLER_LOAD_MORE_ITEM_LIMIT,
+            sleep_seconds=CRAWLER_LOAD_MORE_SLEEP_SECONDS,
+            imdb_enabled=CRAWLER_LOAD_MORE_IMDB_ITEM_LIMIT > 0,
+            imdb_item_limit=CRAWLER_LOAD_MORE_IMDB_ITEM_LIMIT,
+            source=source,
+            resume=True,
+            genre_slugs=genre_slugs,
+            section=section,
+            filters=filters_from_params(params),
+        )
+        stats = crawler.run()
+    except Exception as exc:
+        return _json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+    finally:
+        crawl_lock.release()
 
-    def log_message(self, format: str, *args: Any) -> None:
-        print(f"{self.address_string()} - {format % args}")
+    return _json(
+        HTTPStatus.OK,
+        {
+            "ok": True,
+            "source": source,
+            "genreSlugs": genre_slugs,
+            "section": section,
+            "stats": stats.__dict__,
+        },
+    )
+
+
+@app.post("/api/shutdown")
+def api_shutdown() -> JSONResponse:
+    return _json(
+        HTTPStatus.OK,
+        {"status": "FastAPI server runs under uvicorn. Stop it with Ctrl+C."},
+    )
+
+
+async def _read_request_payload(request: Request) -> dict[str, Any]:
+    content_type = request.headers.get("Content-Type", "")
+    if "application/json" in content_type:
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return data
+
+    raw = (await request.body()).decode("utf-8")
+    parsed = parse_qs(raw, keep_blank_values=True)
+    return {key: values[-1] for key, values in parsed.items()}
+
+
+def _json(status: int, data: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(status_code=int(status), content=data)
 
 
 def run(host: str = HOST, port: int = PORT) -> None:
-    server = ThreadingHTTPServer((host, port), AppHandler)
-    print(f"Open http://{host}:{port}")
-    server.serve_forever()
+    uvicorn.run("app.server:app", host=host, port=port)

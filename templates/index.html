@@ -10,7 +10,6 @@
   <main>
     <header class="topbar">
       <h1>HdRezka DB Filter</h1>
-      <button class="secondary" id="stopBtn" type="button">Остановить сервер</button>
     </header>
 
     <form class="toolbar" id="searchForm">
@@ -78,6 +77,7 @@
           <option value="desc">От высокой</option>
           <option value="asc">От низкой</option>
           <option value="title">По названию</option>
+          <option value="random">Случайно</option>
         </select>
       </label>
 
@@ -104,6 +104,7 @@
       </label>
 
       <button id="submitBtn" type="submit">Искать</button>
+      <button class="secondary" id="crawlBtn" type="button">Загрузить еще</button>
     </form>
 
     <div id="status" class="status"></div>

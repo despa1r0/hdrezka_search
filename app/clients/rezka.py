@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import base64
 from functools import lru_cache
 from typing import Any
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from HdRezkaApi.search import HdRezkaSearch
 
-from app.config import DEFAULT_RESULT_LIMIT, REQUEST_TIMEOUT, REZKA_BASE_URL, USER_AGENT
+from app.config import (
+    REQUEST_TIMEOUT,
+    REZKA_ACCEPT_LANGUAGE,
+    REZKA_BASE_URL,
+    REZKA_COOKIE,
+    USER_AGENT,
+)
 from app.models import SearchItem
-from app.utils.text import get_attr, normalize, parse_rating, parse_year, split_csv
+from app.utils.text import normalize, parse_rating, parse_year, split_csv
 
 
 GENRE_PATHS = {
@@ -57,37 +64,6 @@ GENRE_NAMES = {
 class RezkaClient:
     def __init__(self, base_url: str = REZKA_BASE_URL) -> None:
         self.base_url = base_url.rstrip("/")
-        self._search = HdRezkaSearch(base_url)
-
-    def search(self, query: str, limit: int = DEFAULT_RESULT_LIMIT) -> list[SearchItem]:
-        genre_items = self._search_films_by_genre(query, limit)
-        if genre_items:
-            return genre_items
-
-        return self._advanced_search(query, limit)
-
-    def _advanced_search(self, query: str, limit: int) -> list[SearchItem]:
-        result = self._search(query, find_all=True)
-        items: list[SearchItem] = []
-        seen_urls: set[str] = set()
-        page = 1
-
-        while len(items) < limit:
-            page_items = result.get_page(page)
-            if not page_items:
-                break
-
-            for raw in page_items:
-                item = self._item_from_raw(raw)
-                if item and item.url not in seen_urls:
-                    seen_urls.add(item.url)
-                    items.append(item)
-                if len(items) >= limit:
-                    break
-
-            page += 1
-
-        return items
 
     def _search_films_by_genre(self, query: str, limit: int) -> list[SearchItem]:
         slugs = self.genre_slugs(query)
@@ -125,15 +101,29 @@ class RezkaClient:
                 slugs.append(slug)
         return slugs
 
-    def _catalog_page_url(self, slug: str, page: int) -> str:
+    def _catalog_page_url(self, slug: str, page: int, section: str = "films") -> str:
         if page == 1:
-            return f"{self.base_url}/films/{slug}/"
-        return f"{self.base_url}/films/{slug}/page/{page}/"
+            return f"{self.base_url}/{section}/{slug}/"
+        return f"{self.base_url}/{section}/{slug}/page/{page}/"
+
+    def new_page_url(self, page: int) -> str:
+        if page == 1:
+            return f"{self.base_url}/new/"
+        return f"{self.base_url}/new/page/{page}/"
+
+    def catalog_page_url(self, slug: str, page: int, section: str = "films") -> str:
+        return self._catalog_page_url(slug, page, section)
+
+    def fetch_catalog_page(self, slug: str, page: int, section: str = "films") -> list[SearchItem]:
+        return self._fetch_catalog_page(self._catalog_page_url(slug, page, section), slug)
+
+    def fetch_new_page(self, page: int) -> list[SearchItem]:
+        return self._fetch_catalog_page(self.new_page_url(page))
 
     def _fetch_catalog_page(self, url: str, slug: str = "") -> list[SearchItem]:
         response = requests.get(
             url,
-            headers={"User-Agent": USER_AGENT},
+            headers=build_rezka_headers(referer=self.base_url + "/"),
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
@@ -143,20 +133,27 @@ class RezkaClient:
         for node in soup.select(".b-content__inline_item"):
             link = node.select_one(".b-content__inline_item-link a")
             cover = node.select_one(".b-content__inline_item-cover img")
+            category_node = node.select_one(".b-content__inline_item-cover .cat .entity")
             if not link:
                 continue
 
             title = link.get_text(" ", strip=True)
-            item_url = str(link.get("href") or "")
+            item_url = urljoin(self.base_url + "/", str(link.get("href") or ""))
             if not title or not item_url:
                 continue
+            image_url = ""
+            if cover:
+                image_url = urljoin(
+                    self.base_url + "/",
+                    str(cover.get("src") or cover.get("data-src") or ""),
+                )
 
             items.append(
                 SearchItem(
                     title=title,
                     url=item_url,
-                    image=str(cover.get("src") if cover else ""),
-                    category="films",
+                    image=image_url,
+                    category=category_node.get_text(" ", strip=True) if category_node else "",
                     genres=[GENRE_NAMES[slug]] if slug in GENRE_NAMES else [],
                     seed_genres=[GENRE_NAMES[slug]] if slug in GENRE_NAMES else [],
                     year=parse_year(title),
@@ -165,29 +162,12 @@ class RezkaClient:
 
         return items
 
-    def _item_from_raw(self, raw: Any) -> SearchItem | None:
-        title = str(get_attr(raw, "title", "") or "")
-        url = str(get_attr(raw, "url", "") or "")
-        if not title or not url:
-            return None
-
-        source_rating = parse_rating(get_attr(raw, "rating", None))
-        category = str(get_attr(raw, "category", "") or "")
-        return SearchItem(
-            title=title,
-            url=url,
-            image=str(get_attr(raw, "image", "") or ""),
-            category=category,
-            source_rating=source_rating,
-            year=parse_year(title, category),
-        )
-
 
 @lru_cache(maxsize=512)
 def fetch_page_metadata(url: str) -> dict[str, Any]:
     response = requests.get(
         url,
-        headers={"User-Agent": USER_AGENT},
+        headers=build_rezka_headers(referer=REZKA_BASE_URL),
         timeout=REQUEST_TIMEOUT,
     )
     response.raise_for_status()
@@ -198,6 +178,7 @@ def fetch_page_metadata(url: str) -> dict[str, Any]:
         "countries": [],
         "year": "",
         "description": "",
+        "imdbId": "",
         "imdbRating": None,
         "image": "",
         "originalTitle": "",
@@ -210,7 +191,7 @@ def fetch_page_metadata(url: str) -> dict[str, Any]:
 
     poster = soup.select_one(".b-sidecover img, .b-post__poster img")
     if poster:
-        metadata["image"] = poster.get("src", "")
+        metadata["image"] = urljoin(REZKA_BASE_URL, str(poster.get("src") or poster.get("data-src") or ""))
 
     description = soup.select_one(".b-post__description_text")
     if description:
@@ -219,6 +200,14 @@ def fetch_page_metadata(url: str) -> dict[str, Any]:
     rating = soup.select_one(".b-post__rating .num")
     if rating:
         metadata["rezkaRating"] = parse_rating(rating.get_text(" "))
+
+    imdb_rating = soup.select_one(".b-post__info_rates.imdb .bold")
+    if imdb_rating:
+        metadata["imdbRating"] = parse_rating(imdb_rating.get_text(" "))
+
+    imdb_link = soup.select_one(".b-post__info_rates.imdb a[href]")
+    if imdb_link:
+        metadata["imdbId"] = _imdb_id_from_rezka_help_url(str(imdb_link.get("href") or ""))
 
     info = soup.select_one(".b-post__info")
     if info:
@@ -241,8 +230,46 @@ def fetch_page_metadata(url: str) -> dict[str, Any]:
         elif "\u043e\u0440\u0438\u0433\u0438\u043d" in key:
             metadata["originalTitle"] = metadata["originalTitle"] or value
 
-    imdb_rating = soup.select_one('[itemprop="ratingValue"]')
-    if imdb_rating:
-        metadata["imdbRating"] = parse_rating(imdb_rating.get_text(" "))
+    if metadata["imdbRating"] is None:
+        imdb_rating = soup.select_one('[itemprop="ratingValue"]')
+        if imdb_rating:
+            metadata["imdbRating"] = parse_rating(imdb_rating.get_text(" "))
 
     return metadata
+
+
+def _imdb_id_from_rezka_help_url(value: str) -> str:
+    path = urlparse(value).path.strip("/")
+    if not path.startswith("help/"):
+        return ""
+    encoded = path.removeprefix("help/").strip("/")
+    try:
+        decoded = unquote(base64.b64decode(encoded).decode("utf-8", errors="ignore"))
+    except Exception:
+        return ""
+    parsed = urlparse(decoded)
+    parts = [part for part in parsed.path.split("/") if part]
+    for index, part in enumerate(parts):
+        if part == "title" and index + 1 < len(parts):
+            return parts[index + 1]
+    return ""
+
+
+def build_rezka_headers(referer: str = "") -> dict[str, str]:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": REZKA_ACCEPT_LANGUAGE,
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Priority": "u=0, i",
+    }
+    if referer:
+        headers["Referer"] = referer
+    if REZKA_COOKIE:
+        headers["Cookie"] = REZKA_COOKIE
+    return headers
