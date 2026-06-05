@@ -12,7 +12,7 @@ from app.config import (
     REQUEST_TIMEOUT,
     REZKA_ACCEPT_LANGUAGE,
     REZKA_BASE_URL,
-    REZKA_COOKIE,
+    get_rezka_cookie,
     USER_AGENT,
 )
 from app.models import SearchItem
@@ -111,6 +111,11 @@ class RezkaClient:
             return f"{self.base_url}/new/"
         return f"{self.base_url}/new/page/{page}/"
 
+    def popular_page_url(self, page: int) -> str:
+        if page == 1:
+            return f"{self.base_url}/new/?filter=popular"
+        return f"{self.base_url}/new/page/{page}/?filter=popular"
+
     def catalog_page_url(self, slug: str, page: int, section: str = "films") -> str:
         return self._catalog_page_url(slug, page, section)
 
@@ -119,6 +124,9 @@ class RezkaClient:
 
     def fetch_new_page(self, page: int) -> list[SearchItem]:
         return self._fetch_catalog_page(self.new_page_url(page))
+
+    def fetch_popular_page(self, page: int) -> list[SearchItem]:
+        return self._fetch_catalog_page(self.popular_page_url(page))
 
     def _fetch_catalog_page(self, url: str, slug: str = "") -> list[SearchItem]:
         response = requests.get(
@@ -270,6 +278,7 @@ def build_rezka_headers(referer: str = "") -> dict[str, str]:
     }
     if referer:
         headers["Referer"] = referer
-    if REZKA_COOKIE:
-        headers["Cookie"] = REZKA_COOKIE
+    cookie = get_rezka_cookie()
+    if cookie:
+        headers["Cookie"] = cookie
     return headers

@@ -1,5 +1,6 @@
 beautifulsoup4
 fastapi
+playwright
 psycopg[binary]
 python-dotenv
 requests

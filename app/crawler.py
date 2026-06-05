@@ -17,6 +17,7 @@ from app.config import (
     CRAWLER_SLEEP_SECONDS,
     CRAWLER_SOURCE,
 )
+from app.notifier import notify_exception
 from app.repositories.crawl_repository import get_catalog_state, log_crawl_event, set_catalog_state
 from app.repositories.movie_repository import upsert_movie_with_relations
 from app.services.search_service import GENRE_ALIASES
@@ -61,7 +62,7 @@ class RezkaCrawler:
         self.page_limit = max(1, page_limit)
         self.item_limit = max(1, item_limit)
         self.sleep_seconds = max(0.0, sleep_seconds)
-        self.source = source if source in {"new", "genres"} else "new"
+        self.source = source if source in {"new", "popular", "genres"} else "new"
         self.imdb_enabled = imdb_enabled
         self.imdb_item_limit = max(0, imdb_item_limit)
         self.resume = resume
@@ -74,8 +75,8 @@ class RezkaCrawler:
         self._seen_urls: set[str] = set()
 
     def run(self) -> CrawlStats:
-        if self.source == "new":
-            self._crawl_new()
+        if self.source in {"new", "popular"}:
+            self._crawl_listing(self.source)
             log_crawl_event(
                 message="crawl finished",
                 context=self.stats.__dict__,
@@ -94,8 +95,8 @@ class RezkaCrawler:
         )
         return self.stats
 
-    def _crawl_new(self) -> None:
-        catalog_key = "new"
+    def _crawl_listing(self, source: str) -> None:
+        catalog_key = source
         self.stats.catalogs += 1
         set_catalog_state(catalog_key, status="running")
 
@@ -106,7 +107,11 @@ class RezkaCrawler:
                 if self.stats.saved >= self.item_limit:
                     break
 
-                items = self.rezka.fetch_new_page(page)
+                items = (
+                    self.rezka.fetch_popular_page(page)
+                    if source == "popular"
+                    else self.rezka.fetch_new_page(page)
+                )
                 self.stats.pages += 1
                 set_catalog_state(catalog_key, last_page=page, status="running")
 
@@ -128,11 +133,16 @@ class RezkaCrawler:
         except Exception as exc:
             self.stats.errors += 1
             set_catalog_state(catalog_key, status="error")
+            notify_exception(
+                "Crawler listing failed",
+                exc,
+                extra={"catalog_key": catalog_key, "source": source},
+            )
             log_crawl_event(
                 catalog_key=catalog_key,
                 level="error",
                 message="catalog crawl failed",
-                context={"source": "new", "error": str(exc)},
+                context={"source": source, "error": str(exc)},
             )
 
     def _crawl_catalog(self, slug: str) -> None:
@@ -169,6 +179,11 @@ class RezkaCrawler:
         except Exception as exc:
             self.stats.errors += 1
             set_catalog_state(catalog_key, status="error")
+            notify_exception(
+                "Crawler catalog failed",
+                exc,
+                extra={"catalog_key": catalog_key, "slug": slug},
+            )
             log_crawl_event(
                 catalog_key=catalog_key,
                 level="error",
@@ -380,7 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--page-limit", type=int, default=CRAWLER_PAGE_LIMIT)
     run_parser.add_argument("--item-limit", type=int, default=CRAWLER_ITEM_LIMIT)
     run_parser.add_argument("--sleep-seconds", type=float, default=CRAWLER_SLEEP_SECONDS)
-    run_parser.add_argument("--source", choices=["new", "genres"], default=CRAWLER_SOURCE)
+    run_parser.add_argument("--source", choices=["new", "popular", "genres"], default=CRAWLER_SOURCE)
     run_parser.add_argument("--genre-slugs", default="")
     run_parser.add_argument("--section", choices=["films", "series"], default="films")
     run_parser.add_argument("--imdb-item-limit", type=int, default=CRAWLER_IMDB_ITEM_LIMIT)

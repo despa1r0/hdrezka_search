@@ -26,7 +26,26 @@ REZKA_USER_AGENT = os.getenv(
     ),
 )
 REZKA_COOKIE = os.getenv("REZKA_COOKIE", "").strip()
+REZKA_COOKIE_FILE = os.getenv(
+    "REZKA_COOKIE_FILE",
+    str(ROOT_DIR / "runtime" / "rezka_cookie.txt"),
+)
 REZKA_ACCEPT_LANGUAGE = os.getenv("REZKA_ACCEPT_LANGUAGE", "en-US,en;q=0.9")
+REZKA_COOKIE_REFRESH_ENABLED = os.getenv("REZKA_COOKIE_REFRESH_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+REZKA_COOKIE_REFRESH_URL = os.getenv("REZKA_COOKIE_REFRESH_URL", "https://rezka.ag/new/")
+REZKA_COOKIE_REFRESH_HOUR = int(os.getenv("REZKA_COOKIE_REFRESH_HOUR", "2"))
+REZKA_COOKIE_REFRESH_MINUTE = int(os.getenv("REZKA_COOKIE_REFRESH_MINUTE", "0"))
+REZKA_COOKIE_REFRESH_WRITE_ENV = os.getenv("REZKA_COOKIE_REFRESH_WRITE_ENV", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 DEFAULT_RESULT_LIMIT = 100
 MAX_RESULT_LIMIT = 300
 REQUEST_TIMEOUT = 12
@@ -57,4 +76,24 @@ CRAWLER_IMDB_ENABLED = os.getenv("CRAWLER_IMDB_ENABLED", "1").strip().lower() in
 }
 CRAWLER_IMDB_ITEM_LIMIT = int(os.getenv("CRAWLER_IMDB_ITEM_LIMIT", "200"))
 
+TELEGRAM_ALERTS_ENABLED = os.getenv("TELEGRAM_ALERTS_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
 USER_AGENT = REZKA_USER_AGENT
+
+
+def get_rezka_cookie() -> str:
+    cookie_path = Path(REZKA_COOKIE_FILE)
+    if not cookie_path.is_absolute():
+        cookie_path = ROOT_DIR / cookie_path
+    if cookie_path.is_file():
+        value = cookie_path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    return REZKA_COOKIE

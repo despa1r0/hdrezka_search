@@ -20,7 +20,9 @@ from app.config import (
     STATIC_DIR,
     TEMPLATES_DIR,
 )
+from app.cookie_refresher import start_cookie_refresh_scheduler
 from app.crawler import RezkaCrawler, filters_from_params, genre_slugs_from_params, section_from_params
+from app.notifier import notify_exception
 from app.repositories.user_repository import ensure_test_users, get_all_users
 from app.services.search_service import SearchService
 from app.services.user_state_service import apply_movie_state
@@ -29,6 +31,17 @@ app = FastAPI(title="HdRezka DB Filter")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 search_service = SearchService()
 crawl_lock = threading.Lock()
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    start_cookie_refresh_scheduler()
+
+
+@app.exception_handler(Exception)
+async def api_unhandled_exception(_: Request, exc: Exception) -> JSONResponse:
+    notify_exception("FastAPI unhandled exception", exc)
+    return _json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Internal server error"})
 
 
 @app.get("/")
@@ -98,7 +111,12 @@ async def api_crawl(request: Request) -> JSONResponse:
     try:
         params = await _read_request_payload(request)
         genre_slugs = genre_slugs_from_params(params)
-        source = "genres" if genre_slugs else "new"
+        requested_source = str(params.get("crawl_source", "auto")).strip().lower()
+        if requested_source in {"new", "popular"}:
+            source = requested_source
+            genre_slugs = []
+        else:
+            source = "genres" if genre_slugs else "new"
         section = section_from_params(params)
         crawler = RezkaCrawler(
             page_limit=CRAWLER_LOAD_MORE_PAGE_LIMIT,
@@ -114,6 +132,7 @@ async def api_crawl(request: Request) -> JSONResponse:
         )
         stats = crawler.run()
     except Exception as exc:
+        notify_exception("API crawl failed", exc)
         return _json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
     finally:
         crawl_lock.release()
