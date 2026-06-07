@@ -4,12 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>HdRezka DB Filter</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    (() => {
+      try {
+        const theme = localStorage.getItem("hdrezka-theme");
+        if (theme === "dark" || theme === "light") {
+          document.documentElement.dataset.theme = theme;
+        }
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/styles.css?v=6">
 </head>
 <body>
   <main>
     <header class="topbar">
       <h1>HdRezka DB Filter</h1>
+      <label class="theme-switch" title="Переключить тему">
+        <span>Тема</span>
+        <input id="themeToggle" type="checkbox" role="switch" aria-label="Темная тема">
+        <span class="theme-slider" aria-hidden="true"></span>
+      </label>
     </header>
 
     <form class="toolbar" id="searchForm">
@@ -86,7 +101,7 @@
         <select id="crawlSource" name="crawl_source">
           <option value="auto">Авто</option>
           <option value="new">Новинки</option>
-          <option value="popular">Популярное</option>
+          <option value="popular">Популярное по фильтрам</option>
         </select>
       </label>
 
@@ -120,6 +135,6 @@
     <section id="results" class="results cards"></section>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

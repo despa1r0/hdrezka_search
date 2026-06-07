@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.config import APP_USERS
 from app.database import execute, fetch_all, fetch_one
 
 
@@ -34,3 +35,47 @@ def ensure_test_users() -> None:
         ON CONFLICT (username) DO NOTHING
         """
     )
+
+
+def ensure_app_users() -> None:
+    users = _parse_app_users(APP_USERS)
+    if not users:
+        users = [("test1", "test1"), ("test2", "test2")]
+
+    values_sql = ", ".join(["(%s, %s)"] * len(users))
+    params: list[str] = []
+    for username, display_name in users:
+        params.extend([username, display_name])
+
+    execute(
+        f"""
+        INSERT INTO users (username, display_name)
+        VALUES {values_sql}
+        ON CONFLICT (username) DO UPDATE SET
+            display_name = EXCLUDED.display_name
+        """,
+        params,
+    )
+
+
+def replace_app_users() -> None:
+    users = _parse_app_users(APP_USERS)
+    if not users:
+        raise ValueError("APP_USERS must contain at least one user")
+
+    execute("DELETE FROM users")
+    ensure_app_users()
+
+
+def _parse_app_users(value: str) -> list[tuple[str, str]]:
+    users: list[tuple[str, str]] = []
+    for raw_item in value.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        username, separator, display_name = item.partition(":")
+        username = username.strip()
+        display_name = display_name.strip() if separator else username
+        if username:
+            users.append((username, display_name or username))
+    return users

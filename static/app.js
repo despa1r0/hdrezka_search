@@ -5,11 +5,13 @@ const button = document.getElementById("submitBtn");
 const crawlBtn = document.getElementById("crawlBtn");
 const userSelect = document.getElementById("userSelect");
 const sortModeSelect = document.getElementById("sortMode");
+const themeToggle = document.getElementById("themeToggle");
 const viewModeInputs = Array.from(document.querySelectorAll("input[name='view_mode']"));
 
 let currentItems = [];
 let lastSearchParams = null;
 let lastResultMeta = null;
+let crawlProgressTimer = null;
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
   "&": "&amp;",
@@ -22,6 +24,29 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => 
 const setStatus = (text, isError = false) => {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", isError);
+};
+
+const applyTheme = (theme) => {
+  document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem("hdrezka-theme", theme);
+  } catch {
+    // Theme still changes for the current page if storage is unavailable.
+  }
+  const dark = theme === "dark";
+  themeToggle.checked = dark;
+  themeToggle.setAttribute("aria-checked", String(dark));
+};
+
+const initTheme = () => {
+  let saved = "";
+  try {
+    saved = localStorage.getItem("hdrezka-theme") || "";
+  } catch {
+    saved = "";
+  }
+  const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+  applyTheme(saved || (prefersDark ? "dark" : "light"));
 };
 
 const renderRating = (item) => {
@@ -137,6 +162,37 @@ const runSearch = async (params, mode, { clear = true } = {}) => {
   }
 };
 
+const startCrawlProgressPolling = () => {
+  stopCrawlProgressPolling();
+  crawlProgressTimer = setInterval(async () => {
+    try {
+      const response = await fetch("/api/crawl-progress");
+      const data = await response.json();
+      if (!response.ok) {
+        return;
+      }
+      const stats = data.stats || {};
+      const catalogLine = data.catalogUrl ? `\nКаталог: ${data.catalogUrl}` : "";
+      const currentLine = data.url && data.url !== data.catalogUrl ? `\nТекущая ссылка: ${data.url}` : "";
+      const counters = `Сохранено: ${stats.saved || 0}. Уже было: ${stats.existing || 0}. Пропущено: ${stats.skipped || 0}. Страниц: ${stats.pages || 0}.`;
+      const message = data.error ? `${data.message || "Crawler ошибка"}: ${data.error}` : (data.message || "Crawler работает...");
+      setStatus(`${message} ${counters}${catalogLine}${currentLine}`, Boolean(data.error));
+      if (!data.running) {
+        stopCrawlProgressPolling();
+      }
+    } catch {
+      // Keep the main crawl request in charge of user-visible errors.
+    }
+  }, 900);
+};
+
+const stopCrawlProgressPolling = () => {
+  if (crawlProgressTimer) {
+    clearInterval(crawlProgressTimer);
+    crawlProgressTimer = null;
+  }
+};
+
 const loadUsers = async () => {
   try {
     const response = await fetch("/api/users");
@@ -180,10 +236,15 @@ sortModeSelect.addEventListener("change", async () => {
   await runSearch(params, selectedMode());
 });
 
+themeToggle.addEventListener("change", () => {
+  applyTheme(themeToggle.checked ? "dark" : "light");
+});
+
 crawlBtn.addEventListener("click", async () => {
   crawlBtn.disabled = true;
   const crawlParams = paramsFromForm();
   setStatus("Дозагружаю подходящие фильмы Rezka в локальную БД...");
+  startCrawlProgressPolling();
 
   try {
     const response = await fetch("/api/crawl", {
@@ -197,13 +258,19 @@ crawlBtn.addEventListener("click", async () => {
     }
 
     const stats = data.stats || {};
-    setStatus(`Дозагружено: ${stats.saved || 0}. Пропущено: ${stats.skipped || 0}. Страниц: ${stats.pages || 0}. Ошибок: ${stats.errors || 0}.`);
+    const hasErrors = Number(stats.errors || 0) > 0;
+    const summary = hasErrors
+      ? `Crawler закончил с ошибками: ${stats.last_error || "смотри crawl_log"}`
+      : `Дозагружено новых: ${stats.saved || 0}. Уже было: ${stats.existing || 0}. Пропущено: ${stats.skipped || 0}. Страниц: ${stats.pages || 0}. Ошибок: ${stats.errors || 0}.`;
+    setStatus(summary, hasErrors);
     if (lastSearchParams) {
-      await runSearch(lastSearchParams, selectedMode(), { clear: false });
+      const refreshedParams = paramsFromForm();
+      await runSearch(refreshedParams, selectedMode(), { clear: false });
     }
   } catch (error) {
     setStatus(error.message, true);
   } finally {
+    stopCrawlProgressPolling();
     crawlBtn.disabled = false;
   }
 });
@@ -255,4 +322,5 @@ resultsEl.addEventListener("click", async (event) => {
   }
 });
 
+initTheme();
 loadUsers();

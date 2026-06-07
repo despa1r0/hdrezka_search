@@ -4,7 +4,7 @@
 
 ## Возможности
 
-- пользователи `test1` и `test2`;
+- пользователи задаются через `APP_USERS`;
 - отдельные состояния фильмов для каждого пользователя: `seen`, `hidden`, `favorite`, `watchlist`;
 - история показанных результатов по `user_id + query_hash`;
 - фильтры жанров и стран на включение;
@@ -13,10 +13,11 @@
 - сортировка IMDb от высокой или от низкой;
 - случайная подборка с сохранением всех фильтров;
 - режим карточек и текстовый режим;
+- темная тема;
 - дозагрузка новинок, популярных или жанровых каталогов кнопкой `Загрузить еще`;
 - автообновление Rezka cookies через Playwright/headless;
 - Telegram-алерты для падений crawler-а, FastAPI и cookie-refresh;
-- Dockerfile для запуска web-приложения в контейнере;
+- Dockerfile и Docker Compose для запуска web-приложения с PostgreSQL;
 - локальные seed/reset/test скрипты без сетевых запросов.
 
 ## Установка
@@ -96,10 +97,24 @@ REZKA_COOKIE_REFRESH_WRITE_ENV=1
 
 В интерфейсе кнопка `Загрузить еще` делает маленькую дозагрузку в БД.
 Если в текущем поиске выбран жанр, crawler идет в соответствующий каталог
-Rezka, например `/films/detective/`, и дополнительно применяет текущие
+Rezka, например `/films/detective/`, `/series/detective/`,
+`/cartoons/detective/` или `/animation/detective/`, и дополнительно применяет текущие
 include/ban фильтры перед сохранением. Если жанр не выбран, используется
 источник новинок `/new/`. В поле `Источник дозагрузки` можно явно выбрать
-`Новинки` или `Популярное`; популярное ходит по:
+`Новинки` или `Популярное по фильтрам`. Если для текущего запроса распознан
+жанр, популярное ходит в каталог `best`, например:
+
+```text
+https://rezka.ag/films/best/detective/
+https://rezka.ag/films/best/detective/page/2/
+```
+
+Для `Тип = Аниме` используется раздел `/animation/`, например
+`/animation/best/horror/`; для мультфильмов `/cartoons/`, для сериалов
+`/series/`.
+
+Страны не добавляются в URL и применяются только как фильтр после чтения
+страницы фильма. Если жанр не распознан, используется общий popular:
 
 ```text
 https://rezka.ag/new/?filter=popular
@@ -115,8 +130,13 @@ CRAWLER_LOAD_MORE_IMDB_ITEM_LIMIT=0
 CRAWLER_LOAD_MORE_SLEEP_SECONDS=0
 ```
 
+Пассивного фонового наполнения БД сейчас нет: база наполняется только вручную
+через кнопку `Загрузить еще` или CLI `python -m app.crawler run`. Scheduler
+cookie-refresh обновляет только cookies для Rezka, но не запускает crawler.
+
 `CRAWLER_LOAD_MORE_ITEM_LIMIT` означает целевое количество сохраненных подходящих
-фильмов, а не просмотренных карточек. При узких фильтрах, например
+фильмов, а не просмотренных карточек. Crawler применяет текущие genre/country,
+ban-фильтры, content type и IMDb-диапазон перед сохранением. При узких фильтрах, например
 `Детективы + Великобритания`, crawler может просмотреть много кандидатов,
 пропустить неподходящие страны и сохранить меньше лимита, если за
 `CRAWLER_LOAD_MORE_PAGE_LIMIT` страниц подходящих фильмов мало.
@@ -137,10 +157,11 @@ https://rezka.ag/new/page/2/
 .venv/bin/python -m app.crawler run --source genres
 ```
 
-Популярное доступно отдельно:
+Популярное и best-каталоги доступны отдельно:
 
 ```bash
 .venv/bin/python -m app.crawler run --source popular
+.venv/bin/python -m app.crawler run --source best --best-slugs detective
 ```
 
 Быстрый smoke-run:
@@ -167,6 +188,23 @@ Debug:
 HDREZKA_DEBUG=1 .venv/bin/python -m uvicorn app.server:app --host 127.0.0.1 --port 8000
 ```
 
+## Env notes
+
+`HDREZKA_DEBUG=0` выключает подробный debug-вывод. Если поставить `1`, поиск
+будет писать SQL/debug параметры в stdout или `docker compose logs app`.
+
+`REZKA_COOKIE_REFRESH_WRITE_ENV=0` означает, что Playwright cookie-refresh не
+перезаписывает `.env`; новые cookies пишутся только в `REZKA_COOKIE_FILE`,
+например `runtime/rezka_cookie.txt`. Если поставить `1`, refresh дополнительно
+заменит строку `REZKA_COOKIE=` в локальном `.env`.
+
+`CRAWLER_SOURCE=new` задает дефолтный источник CLI crawler-а. Значения:
+`new` ходит по `/new/`, `popular` по `/new/?filter=popular`, `best` по
+`/{section}/best/{slug}/`, `genres` по жанровым каталогам. В UI значение `auto`
+выбирает жанровый каталог, если жанр распознан из запроса или фильтра; иначе
+используется `new`. UI-источник `Популярное по фильтрам` выбирает `best`, если
+есть распознанный жанр, иначе падает обратно на общий `popular`.
+
 ## Telegram alerts
 
 Создай Telegram-бота через BotFather, возьми token и chat id, затем добавь в
@@ -181,24 +219,18 @@ TELEGRAM_CHAT_ID=123456789
 Если эти значения пустые или `TELEGRAM_ALERTS_ENABLED=0`, приложение просто
 не отправляет алерты.
 
-## Docker
+## Docker Compose local
 
-Собрать образ:
-
-```bash
-docker build -t hdrezka-search .
-```
-
-Если PostgreSQL уже запущен как локальный контейнер `hdrezka-postgres` с
-портом `5432:5432`, самый простой Linux-вариант:
+Основной способ запуска: Docker Compose. Он поднимает PostgreSQL, web-app и
+одноразовый init-сервис для чистой БД.
 
 ```bash
-docker run --rm --name hdrezka-app \
-  --network host \
-  --env-file .env \
-  -e DATABASE_URL=postgresql://hdrezka_user:password@127.0.0.1:5432/hdrezka_filter \
-  -v "$PWD/runtime:/app/runtime" \
-  hdrezka-search
+cp .env.example .env
+mkdir -p runtime
+
+docker compose up -d db
+docker compose run --rm init-db
+docker compose up -d --build app
 ```
 
 Открыть:
@@ -207,42 +239,111 @@ docker run --rm --name hdrezka-app \
 http://127.0.0.1:8000/
 ```
 
-Вариант без host-network, через отдельную Docker-сеть:
+`init-db` применяет миграцию, удаляет тестовые фильмы/состояния/логи и создает
+пользователей из `.env`:
 
-```bash
-docker network create hdrezka-net
-docker network connect hdrezka-net hdrezka-postgres
-
-docker run --rm --name hdrezka-app \
-  --network hdrezka-net \
-  --env-file .env \
-  -e DATABASE_URL=postgresql://hdrezka_user:password@hdrezka-postgres:5432/hdrezka_filter \
-  -p 8000:8000 \
-  -v "$PWD/runtime:/app/runtime" \
-  hdrezka-search
+```env
+APP_USERS=user1:User 1,user2:User 2
 ```
 
-Разовая команда cookie-refresh внутри образа:
+Повторный запуск `init-db` очищает БД. Не запускай его, если хочешь сохранить
+уже накрауленные фильмы.
+
+Полезные команды:
 
 ```bash
-docker run --rm \
-  --network host \
-  --env-file .env \
-  -v "$PWD/runtime:/app/runtime" \
-  hdrezka-search \
-  python -m app.cookie_refresher refresh
+docker compose logs -f app
+docker compose logs -f db
+docker compose restart app
+docker compose down
+docker compose up -d --build app
 ```
 
-Разовый запуск crawler-а из образа:
+Разовая команда cookie-refresh внутри Compose:
 
 ```bash
-docker run --rm \
-  --network host \
-  --env-file .env \
-  -e DATABASE_URL=postgresql://hdrezka_user:password@127.0.0.1:5432/hdrezka_filter \
-  -v "$PWD/runtime:/app/runtime" \
-  hdrezka-search \
-  python -m app.crawler run --source popular --page-limit 1 --item-limit 10
+docker compose run --rm app python -m app.cookie_refresher refresh
+```
+
+Разовый запуск crawler-а:
+
+```bash
+docker compose run --rm app python -m app.crawler run --source popular --page-limit 1 --item-limit 10
+```
+
+## VPS + Tailscale
+
+На чистом Ubuntu/Debian VPS:
+
+```bash
+sudo apt update
+sudo apt install -y git curl
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker "$USER"
+```
+
+Перезайди по SSH, чтобы группа `docker` применилась, затем поставь Tailscale:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+tailscale ip -4
+```
+
+Скопируй Tailscale IP. Дальше:
+
+```bash
+git clone https://github.com/despa1r0/hdrezka_search.git
+cd hdrezka_search
+
+cp .env.example .env
+nano .env
+```
+
+В `.env` на VPS выставь:
+
+```env
+POSTGRES_USER=hdrezka_user
+POSTGRES_PASSWORD=replace_with_strong_password
+POSTGRES_DB=hdrezka_filter
+APP_BIND=TAILSCALE_IP_СЮДА
+APP_PORT=8000
+APP_USERS=user1:User 1,user2:User 2
+DATABASE_URL=postgresql://hdrezka_user:replace_with_strong_password@db:5432/hdrezka_filter
+TELEGRAM_ALERTS_ENABLED=1
+TELEGRAM_BOT_TOKEN=replace_me
+TELEGRAM_CHAT_ID=replace_me
+```
+
+`APP_BIND` важен: так Docker будет слушать только Tailscale-адрес VPS, а не
+публичный интернет.
+
+Запусти:
+
+```bash
+mkdir -p runtime
+docker compose up -d db
+docker compose run --rm init-db
+docker compose up -d --build app
+```
+
+Открыть с телефона, подключенного к тому же Tailnet:
+
+```text
+http://TAILSCALE_IP_ТВОЕГО_VPS:8000/
+```
+
+Если включен `ufw`, разреши порт только на Tailscale-интерфейсе:
+
+```bash
+sudo ufw allow in on tailscale0 to any port 8000 proto tcp
+```
+
+Обновление после нового push:
+
+```bash
+git pull
+docker compose up -d --build app
 ```
 
 ## Остановка сервера

@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16
+    container_name: hdrezka-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hdrezka_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-hdrezka_filter}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hdrezka_user} -d ${POSTGRES_DB:-hdrezka_filter}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - hdrezka-postgres-data:/var/lib/postgresql/data
+    networks:
+      - hdrezka-net
+    restart: unless-stopped
+
+  init-db:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hdrezka_user}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-hdrezka_filter}
+    command: ["python", "-m", "app.admin", "init-empty-db"]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./runtime:/app/runtime
+    networks:
+      - hdrezka-net
+    profiles:
+      - tools
+
+  app:
+    build: .
+    container_name: hdrezka-app
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hdrezka_user}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-hdrezka_filter}
+    ports:
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./runtime:/app/runtime
+    networks:
+      - hdrezka-net
+    restart: unless-stopped
+
+volumes:
+  hdrezka-postgres-data:
+
+networks:
+  hdrezka-net:

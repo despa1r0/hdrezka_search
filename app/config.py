@@ -53,6 +53,7 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://hdrezka_user:password@localhost:5432/hdrezka_filter",
 )
+APP_USERS = os.getenv("APP_USERS", "test1:test1,test2:test2")
 HDREZKA_DEBUG = os.getenv("HDREZKA_DEBUG", "").strip().lower() in {
     "1",
     "true",

@@ -106,6 +106,11 @@ class RezkaClient:
             return f"{self.base_url}/{section}/{slug}/"
         return f"{self.base_url}/{section}/{slug}/page/{page}/"
 
+    def _best_page_url(self, slug: str, page: int, section: str = "films") -> str:
+        if page == 1:
+            return f"{self.base_url}/{section}/best/{slug}/"
+        return f"{self.base_url}/{section}/best/{slug}/page/{page}/"
+
     def new_page_url(self, page: int) -> str:
         if page == 1:
             return f"{self.base_url}/new/"
@@ -119,8 +124,14 @@ class RezkaClient:
     def catalog_page_url(self, slug: str, page: int, section: str = "films") -> str:
         return self._catalog_page_url(slug, page, section)
 
+    def best_page_url(self, slug: str, page: int, section: str = "films") -> str:
+        return self._best_page_url(slug, page, section)
+
     def fetch_catalog_page(self, slug: str, page: int, section: str = "films") -> list[SearchItem]:
         return self._fetch_catalog_page(self._catalog_page_url(slug, page, section), slug)
+
+    def fetch_best_page(self, slug: str, page: int, section: str = "films") -> list[SearchItem]:
+        return self._fetch_catalog_page(self._best_page_url(slug, page, section), slug)
 
     def fetch_new_page(self, page: int) -> list[SearchItem]:
         return self._fetch_catalog_page(self.new_page_url(page))
