@@ -52,8 +52,9 @@ class SearchService:
 
         try:
             rows = self._search_rows(options)
-            movie_ids = [int(row["id"]) for row in rows]
-            mark_as_shown(options["user_id"], options["query_hash"], movie_ids)
+            if options["state_filter"] == "all":
+                movie_ids = [int(row["id"]) for row in rows]
+                mark_as_shown(options["user_id"], options["query_hash"], movie_ids)
         except Exception as exc:
             debug_log(f"db search failed error={exc}", options["debug"])
             return HTTPStatus.SERVICE_UNAVAILABLE, {
@@ -100,6 +101,8 @@ class SearchService:
             "sort_mode": params.get("sort_mode", params.get("sort_order", "desc")).strip().lower(),
             "limit": self._parse_limit(params.get("limit", params.get("max_results", ""))),
             "exclude_seen": self._parse_bool(params.get("exclude_seen", "1")),
+            "include_seen": self._parse_bool(params.get("include_seen", "")),
+            "state_filter": self._state_filter(params.get("state_filter", "all")),
             "debug": self._parse_bool(params.get("debug", "")),
         }
         options["query_hash"] = build_query_hash(options)
@@ -170,7 +173,21 @@ class SearchService:
             values=options["ban_countries"],
         )
 
-        if options["exclude_seen"]:
+        if options["state_filter"] != "all":
+            where.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM user_movie_state ums_filter
+                    WHERE ums_filter.movie_id = m.id
+                      AND ums_filter.user_id = %(user_id)s
+                      AND ums_filter.state = %(state_filter)s
+                )
+                """
+            )
+            sql_params["state_filter"] = options["state_filter"]
+
+        if options["state_filter"] == "all" and options["exclude_seen"]:
             where.append(
                 """
                 NOT EXISTS (
@@ -190,10 +207,23 @@ class SearchService:
                 FROM user_movie_state ums
                 WHERE ums.movie_id = m.id
                   AND ums.user_id = %(user_id)s
-                  AND ums.state IN ('seen', 'hidden')
+                  AND ums.state = 'hidden'
             )
             """
         )
+
+        if options["state_filter"] == "all" and not options["include_seen"]:
+            where.append(
+                """
+                NOT EXISTS (
+                    SELECT 1
+                    FROM user_movie_state ums_seen
+                    WHERE ums_seen.movie_id = m.id
+                      AND ums_seen.user_id = %(user_id)s
+                      AND ums_seen.state = 'seen'
+                )
+                """
+            )
 
         order_by = self._order_by(options["sort_mode"])
         sql = f"""
@@ -214,10 +244,17 @@ class SearchService:
                 COALESCE(
                     array_agg(DISTINCT mc.country) FILTER (WHERE mc.country IS NOT NULL),
                     '{{}}'
-                ) AS countries
+                ) AS countries,
+                COALESCE(
+                    array_agg(DISTINCT movie_state.state) FILTER (WHERE movie_state.state IS NOT NULL),
+                    '{{}}'
+                ) AS states
             FROM movies m
             LEFT JOIN movie_genres mg ON mg.movie_id = m.id
             LEFT JOIN movie_countries mc ON mc.movie_id = m.id
+            LEFT JOIN user_movie_state movie_state
+              ON movie_state.movie_id = m.id
+             AND movie_state.user_id = %(user_id)s
             WHERE {" AND ".join(where)}
             GROUP BY m.id
             {order_by}
@@ -280,6 +317,7 @@ class SearchService:
 
     def _row_to_item(self, row: dict[str, Any]) -> dict[str, Any]:
         rating = float(row["imdb_rating"]) if row["imdb_rating"] is not None else None
+        states = list(row["states"] or [])
         return {
             "id": row["id"],
             "movieId": row["id"],
@@ -295,6 +333,9 @@ class SearchService:
             "ratingSource": "IMDb" if rating is not None else "",
             "genres": list(row["genres"] or []),
             "countries": list(row["countries"] or []),
+            "states": states,
+            "isSeen": "seen" in states,
+            "isFavorite": "favorite" in states,
             "year": str(row["year"] or ""),
             "description": row["description"] or "",
         }
@@ -348,6 +389,14 @@ class SearchService:
 
     def _parse_bool(self, value: str) -> bool:
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _state_filter(self, value: str) -> str:
+        clean = value.strip().lower()
+        if clean in {"", "all"}:
+            return "all"
+        if clean in {"seen", "favorite"}:
+            return clean
+        raise ValueError("state_filter must be one of: all, seen, favorite")
 
     def _content_type(self, value: str) -> str:
         clean = value.strip().lower()

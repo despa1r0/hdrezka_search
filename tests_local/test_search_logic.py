@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT_DIR))
 from app.repositories.user_repository import get_user_by_username
 from app.services.query_hash_service import build_query_hash
 from app.services.search_service import SearchService
-from app.services.user_state_service import set_movie_state
+from app.services.user_state_service import apply_movie_state, set_movie_state
 from tests_local.reset_test_db import main as reset_db
 from tests_local.seed_test_data import main as seed_db
 
@@ -138,7 +138,12 @@ def main() -> None:
     )
 
     hidden_movie_id = first[0]["movieId"]
+    seen_movie_id = first[1]["movieId"]
+    favorite_movie_id = first[2]["movieId"]
     set_movie_state(int(user1_id), int(hidden_movie_id), "hidden")
+    set_movie_state(int(user1_id), int(hidden_movie_id), "favorite")
+    set_movie_state(int(user1_id), int(seen_movie_id), "seen")
+    set_movie_state(int(user1_id), int(favorite_movie_id), "favorite")
 
     user1_visible = search(
         service,
@@ -149,6 +154,65 @@ def main() -> None:
         exclude_seen="0",
     )
     assert "Фантастика A" not in [item["title"] for item in user1_visible]
+    assert "Фантастика B" not in [item["title"] for item in user1_visible]
+
+    user1_with_seen = search(
+        service,
+        user_id=user1_id,
+        query="фантастика",
+        sort_mode="desc",
+        limit="10",
+        exclude_seen="0",
+        include_seen="1",
+    )
+    assert "Фантастика A" not in [item["title"] for item in user1_with_seen]
+    seen_item = next(item for item in user1_with_seen if item["title"] == "Фантастика B")
+    assert seen_item["isSeen"] is True
+    assert "seen" in seen_item["states"]
+
+    user1_seen = search(
+        service,
+        user_id=user1_id,
+        query="фантастика",
+        sort_mode="desc",
+        limit="10",
+        state_filter="seen",
+    )
+    assert_titles(user1_seen, ["Фантастика B"])
+    assert user1_seen[0]["isSeen"] is True
+
+    user1_favorites = search(
+        service,
+        user_id=user1_id,
+        query="фантастика",
+        sort_mode="desc",
+        limit="10",
+        state_filter="favorite",
+    )
+    assert_titles(user1_favorites, ["Фантастика C"])
+    assert user1_favorites[0]["isFavorite"] is True
+
+    apply_movie_state(int(user1_id), int(favorite_movie_id), "favorite", "remove")
+    user1_favorites_after_remove = search(
+        service,
+        user_id=user1_id,
+        query="фантастика",
+        sort_mode="desc",
+        limit="10",
+        state_filter="favorite",
+    )
+    assert_titles(user1_favorites_after_remove, [])
+
+    apply_movie_state(int(user1_id), int(seen_movie_id), "seen", "remove")
+    user1_seen_after_remove = search(
+        service,
+        user_id=user1_id,
+        query="фантастика",
+        sort_mode="desc",
+        limit="10",
+        exclude_seen="0",
+    )
+    assert "Фантастика B" in [item["title"] for item in user1_seen_after_remove]
 
     user2_visible = search(
         service,

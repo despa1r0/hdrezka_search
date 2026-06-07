@@ -6,12 +6,17 @@ const crawlBtn = document.getElementById("crawlBtn");
 const userSelect = document.getElementById("userSelect");
 const sortModeSelect = document.getElementById("sortMode");
 const themeToggle = document.getElementById("themeToggle");
+const menuToggle = document.getElementById("menuToggle");
+const menuPanel = document.getElementById("menuPanel");
+const sectionMenu = document.getElementById("sectionMenu");
+const sectionButtons = Array.from(document.querySelectorAll("[data-state-filter]"));
 const viewModeInputs = Array.from(document.querySelectorAll("input[name='view_mode']"));
 
 let currentItems = [];
 let lastSearchParams = null;
 let lastResultMeta = null;
 let crawlProgressTimer = null;
+let currentStateFilter = "all";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
   "&": "&amp;",
@@ -56,21 +61,33 @@ const renderRating = (item) => {
   return `<span class="rating">IMDb ${Number(item.rating).toFixed(1)}</span>`;
 };
 
+const itemHasState = (item, state) => Array.isArray(item.states) && item.states.includes(state);
+
 const renderActions = (item) => {
   const id = Number(item.movieId ?? item.id);
   if (!id) {
     return "";
   }
+  const seenActive = item.isSeen || itemHasState(item, "seen") ? " is-active" : "";
+  const favoriteActive = item.isFavorite || itemHasState(item, "favorite") ? " is-active" : "";
+  const watchlistActive = itemHasState(item, "watchlist") ? " is-active" : "";
 
   return `
     <div class="actions" data-movie-id="${id}">
-      <button type="button" data-state="seen">Уже смотрел</button>
+      <button class="${seenActive}" type="button" data-state="seen">${item.isSeen ? "Просмотрен" : "Уже смотрел"}</button>
       <button type="button" data-state="hidden">Скрыть</button>
-      <button type="button" data-state="favorite">В избранное</button>
-      <button type="button" data-state="watchlist">Хочу посмотреть</button>
+      <button class="${favoriteActive}" type="button" data-state="favorite">${item.isFavorite ? "Понравился" : "Понравился"}</button>
+      <button class="${watchlistActive}" type="button" data-state="watchlist">${itemHasState(item, "watchlist") ? "В списке" : "Хочу посмотреть"}</button>
     </div>
   `;
 };
+
+const renderTitle = (item, className = "title") => `
+  <div class="title-line">
+    <a class="${className}" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>
+    <button class="copy-title" type="button" data-copy-title="${escapeHtml(item.title)}" title="Скопировать название" aria-label="Скопировать название">Copy</button>
+  </div>
+`;
 
 const renderCardItem = (item) => {
   const image = item.image
@@ -79,12 +96,13 @@ const renderCardItem = (item) => {
   const genres = item.genres?.length ? item.genres.join(", ") : "жанры не указаны";
   const countries = item.countries?.length ? item.countries.join(", ") : "страны не указаны";
   const year = item.year ? ` · ${item.year}` : "";
+  const seenClass = item.isSeen ? " is-seen" : "";
 
   return `
-    <article class="card" data-result-id="${escapeHtml(item.movieId ?? item.id)}">
+    <article class="card${seenClass}" data-result-id="${escapeHtml(item.movieId ?? item.id)}">
       ${image}
       <div class="meta">
-        <a class="title" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>
+        ${renderTitle(item)}
         ${renderRating(item)}
         <div class="muted">${escapeHtml(item.category || "")}${escapeHtml(year)}</div>
         <div class="muted">${escapeHtml(genres)}</div>
@@ -100,12 +118,13 @@ const renderTextItem = (item, index) => {
   const year = item.year ? `, ${item.year}` : "";
   const genres = item.genres?.length ? ` | ${item.genres.join(", ")}` : "";
   const countries = item.countries?.length ? ` | ${item.countries.join(", ")}` : "";
+  const seenClass = item.isSeen ? " is-seen" : "";
 
   return `
-    <article class="text-row" data-result-id="${escapeHtml(item.movieId ?? item.id)}">
+    <article class="text-row${seenClass}" data-result-id="${escapeHtml(item.movieId ?? item.id)}">
       <div class="text-title">
         <span>${index + 1}.</span>
-        <a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>
+        ${renderTitle(item, "")}
       </div>
       <div class="muted">${escapeHtml(rating + year + genres + countries)}</div>
       ${renderActions(item)}
@@ -128,12 +147,21 @@ const selectedMode = () => {
 const paramsFromForm = () => {
   const formData = new FormData(form);
   formData.delete("view_mode");
+  formData.set("state_filter", currentStateFilter);
 
   if (!formData.get("exclude_seen")) {
     formData.set("exclude_seen", "0");
   }
+  if (!formData.get("include_seen")) {
+    formData.set("include_seen", "0");
+  }
 
   return new URLSearchParams(formData);
+};
+
+const sectionLabel = () => {
+  const active = sectionButtons.find((item) => item.dataset.stateFilter === currentStateFilter);
+  return active?.textContent?.trim() || "Все фильмы";
 };
 
 const runSearch = async (params, mode, { clear = true } = {}) => {
@@ -154,7 +182,7 @@ const runSearch = async (params, mode, { clear = true } = {}) => {
     lastSearchParams = new URLSearchParams(params);
     lastResultMeta = data;
     renderResults(currentItems, mode);
-    setStatus(`Найдено: ${data.count}. Источник рейтинга: IMDb. Время: ${data.elapsed} сек.`);
+    setStatus(`${sectionLabel()}. Найдено: ${data.count}. Источник рейтинга: IMDb. Время: ${data.elapsed} сек.`);
   } catch (error) {
     setStatus(error.message, true);
   } finally {
@@ -222,9 +250,46 @@ viewModeInputs.forEach((input) => {
   input.addEventListener("change", () => {
     renderResults(currentItems, selectedMode());
     if (lastResultMeta) {
-      setStatus(`Найдено: ${lastResultMeta.count}. Источник рейтинга: IMDb. Время: ${lastResultMeta.elapsed} сек.`);
+      setStatus(`${sectionLabel()}. Найдено: ${lastResultMeta.count}. Источник рейтинга: IMDb. Время: ${lastResultMeta.elapsed} сек.`);
     }
   });
+});
+
+const closeMenu = () => {
+  menuPanel.hidden = true;
+  menuToggle.setAttribute("aria-expanded", "false");
+};
+
+const setActiveSection = async (stateFilter) => {
+  currentStateFilter = stateFilter;
+  sectionButtons.forEach((item) => {
+    const active = item.dataset.stateFilter === currentStateFilter;
+    item.toggleAttribute("aria-current", active);
+  });
+  closeMenu();
+  if (userSelect.value) {
+    await runSearch(paramsFromForm(), selectedMode());
+  }
+};
+
+menuToggle.addEventListener("click", () => {
+  const open = menuPanel.hidden;
+  menuPanel.hidden = !open;
+  menuToggle.setAttribute("aria-expanded", String(open));
+});
+
+menuPanel.addEventListener("click", async (event) => {
+  const item = event.target.closest("[data-state-filter]");
+  if (!item) {
+    return;
+  }
+  await setActiveSection(item.dataset.stateFilter || "all");
+});
+
+document.addEventListener("click", (event) => {
+  if (!sectionMenu.contains(event.target)) {
+    closeMenu();
+  }
 });
 
 sortModeSelect.addEventListener("change", async () => {
@@ -276,6 +341,12 @@ crawlBtn.addEventListener("click", async () => {
 });
 
 resultsEl.addEventListener("click", async (event) => {
+  const copyButton = event.target.closest("button[data-copy-title]");
+  if (copyButton) {
+    await copyTitle(copyButton.dataset.copyTitle || "");
+    return;
+  }
+
   const actionButton = event.target.closest("button[data-state]");
   if (!actionButton) {
     return;
@@ -286,6 +357,7 @@ resultsEl.addEventListener("click", async (event) => {
   const userId = userSelect.value;
   const movieId = actions?.dataset.movieId;
   const state = actionButton.dataset.state;
+  const action = state !== "hidden" && actionButton.classList.contains("is-active") ? "remove" : "set";
 
   if (!userId || !movieId || !state) {
     return;
@@ -300,7 +372,7 @@ resultsEl.addEventListener("click", async (event) => {
         user_id: userId,
         movie_id: movieId,
         state,
-        action: "set",
+        action,
       }),
     });
     const data = await response.json();
@@ -308,19 +380,100 @@ resultsEl.addEventListener("click", async (event) => {
       throw new Error(data.error || "Не удалось обновить состояние");
     }
 
-    if (state === "seen" || state === "hidden") {
+    if (state === "hidden") {
       result?.remove();
       currentItems = currentItems.filter((item) => String(item.movieId ?? item.id) !== String(movieId));
-      setStatus(state === "seen" ? "Фильм помечен как просмотренный." : "Фильм скрыт.");
+      setStatus("Фильм скрыт.");
     } else {
-      actionButton.textContent = state === "favorite" ? "В избранном" : "В списке";
-      setStatus(state === "favorite" ? "Добавлено в избранное." : "Добавлено в список просмотра.");
+      const enabled = action === "set";
+      markCurrentItemState(movieId, state, enabled);
+      if (!enabled && currentStateFilter === state) {
+        result?.remove();
+        currentItems = currentItems.filter((item) => String(item.movieId ?? item.id) !== String(movieId));
+        setStatus(state === "seen" ? "Метка просмотренного снята." : "Убрано из любимых.");
+        return;
+      }
+      if (result) {
+        result.classList.toggle("is-seen", state === "seen" ? enabled : result.classList.contains("is-seen"));
+      }
+      actionButton.classList.toggle("is-active", enabled);
+      actionButton.textContent = stateButtonText(state, enabled);
+      actionButton.disabled = false;
+      setStatus(stateStatusText(state, enabled));
     }
   } catch (error) {
     actionButton.disabled = false;
     setStatus(error.message, true);
   }
 });
+
+const markCurrentItemState = (movieId, state, enabled) => {
+  currentItems = currentItems.map((item) => {
+    if (String(item.movieId ?? item.id) !== String(movieId)) {
+      return item;
+    }
+    const states = Array.isArray(item.states) ? item.states : [];
+    const nextStates = enabled
+      ? (states.includes(state) ? states : [...states, state])
+      : states.filter((itemState) => itemState !== state);
+    return {
+      ...item,
+      states: nextStates,
+      isSeen: nextStates.includes("seen"),
+      isFavorite: nextStates.includes("favorite"),
+    };
+  });
+};
+
+const stateButtonText = (state, enabled) => {
+  if (state === "seen") {
+    return enabled ? "Просмотрен" : "Уже смотрел";
+  }
+  if (state === "favorite") {
+    return "Понравился";
+  }
+  if (state === "watchlist") {
+    return enabled ? "В списке" : "Хочу посмотреть";
+  }
+  return enabled ? "Добавлено" : "Добавить";
+};
+
+const stateStatusText = (state, enabled) => {
+  if (state === "seen") {
+    return enabled ? "Фильм помечен как просмотренный." : "Метка просмотренного снята.";
+  }
+  if (state === "favorite") {
+    return enabled ? "Добавлено в любимые." : "Убрано из любимых.";
+  }
+  if (state === "watchlist") {
+    return enabled ? "Добавлено в список просмотра." : "Убрано из списка просмотра.";
+  }
+  return enabled ? "Метка добавлена." : "Метка снята.";
+};
+
+const copyTitle = async (title) => {
+  if (!title) {
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(title);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = title;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    setStatus(`Название скопировано: ${title}`);
+  } catch {
+    setStatus("Не удалось скопировать название.", true);
+  }
+};
 
 initTheme();
 loadUsers();

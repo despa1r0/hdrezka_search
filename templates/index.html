@@ -14,17 +14,31 @@
       } catch (_) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=6">
+  <link rel="stylesheet" href="/static/styles.css?v=8">
 </head>
 <body>
   <main>
     <header class="topbar">
       <h1>HdRezka DB Filter</h1>
-      <label class="theme-switch" title="Переключить тему">
-        <span>Тема</span>
-        <input id="themeToggle" type="checkbox" role="switch" aria-label="Темная тема">
-        <span class="theme-slider" aria-hidden="true"></span>
-      </label>
+      <div class="topbar-actions">
+        <div class="section-menu" id="sectionMenu">
+          <button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="menuPanel" aria-label="Открыть разделы">
+            <span aria-hidden="true"></span>
+            <span aria-hidden="true"></span>
+            <span aria-hidden="true"></span>
+          </button>
+          <div class="menu-panel" id="menuPanel" hidden>
+            <button type="button" data-state-filter="all" aria-current="page">Все фильмы</button>
+            <button type="button" data-state-filter="seen">Просмотренные</button>
+            <button type="button" data-state-filter="favorite">Любимые</button>
+          </div>
+        </div>
+        <label class="theme-switch" title="Переключить тему">
+          <span>Тема</span>
+          <input id="themeToggle" type="checkbox" role="switch" aria-label="Темная тема">
+          <span class="theme-slider" aria-hidden="true"></span>
+        </label>
+      </div>
     </header>
 
     <form class="toolbar" id="searchForm">
@@ -83,7 +97,7 @@
 
       <label>
         Лимит
-        <input id="limit" name="limit" type="number" min="1" max="300" value="100">
+        <input id="limit" name="limit" type="number" min="1" max="500" value="100">
       </label>
 
       <label>
@@ -123,6 +137,11 @@
       </label>
 
       <label class="checkbox-label">
+        <input id="includeSeen" name="include_seen" type="checkbox" value="1">
+        Показать уже смотрел
+      </label>
+
+      <label class="checkbox-label">
         <input id="debug" name="debug" type="checkbox" value="1">
         Debug в терминал
       </label>
@@ -135,6 +154,6 @@
     <section id="results" class="results cards"></section>
   </main>
 
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/app.js?v=8"></script>
 </body>
 </html>
