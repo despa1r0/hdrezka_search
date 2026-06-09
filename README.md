@@ -273,6 +273,10 @@ docker compose run --rm app python -m app.crawler run --source popular --page-li
 
 ## VPS + Tailscale
 
+Рекомендуемый вариант: Tailscale ставится на сам VPS, а Docker публикует
+web-контейнер только на Tailscale IP. Так app доступен участникам tailnet, но
+не торчит в публичный интернет.
+
 На чистом Ubuntu/Debian VPS:
 
 ```bash
@@ -290,7 +294,7 @@ sudo tailscale up
 tailscale ip -4
 ```
 
-Скопируй Tailscale IP. Дальше:
+Скопируй Tailscale IP. Дальше залей проект:
 
 ```bash
 git clone https://github.com/despa1r0/hdrezka_search.git
@@ -300,16 +304,20 @@ cp .env.example .env
 nano .env
 ```
 
-В `.env` на VPS выставь:
+В `.env` на VPS выставь. `APP_USERS` можно сразу заменить на новые имена:
 
 ```env
+COMPOSE_PROJECT_NAME=hdrezka_search
 POSTGRES_USER=hdrezka_user
 POSTGRES_PASSWORD=replace_with_strong_password
 POSTGRES_DB=hdrezka_filter
 APP_BIND=TAILSCALE_IP_СЮДА
 APP_PORT=8000
-APP_USERS=user1:User 1,user2:User 2
+APP_USERS=client1:Client 1,client2:Client 2
 DATABASE_URL=postgresql://hdrezka_user:replace_with_strong_password@db:5432/hdrezka_filter
+REZKA_COOKIE_REFRESH_ENABLED=1
+REZKA_COOKIE_REFRESH_HOUR=2
+REZKA_COOKIE_REFRESH_MINUTE=0
 TELEGRAM_ALERTS_ENABLED=1
 TELEGRAM_BOT_TOKEN=replace_me
 TELEGRAM_CHAT_ID=replace_me
@@ -318,7 +326,9 @@ TELEGRAM_CHAT_ID=replace_me
 `APP_BIND` важен: так Docker будет слушать только Tailscale-адрес VPS, а не
 публичный интернет.
 
-Запусти:
+### Чистый старт без переноса БД
+
+Только для пустой базы:
 
 ```bash
 mkdir -p runtime
@@ -326,6 +336,45 @@ docker compose up -d db
 docker compose run --rm init-db
 docker compose up -d --build app
 ```
+
+`init-db` удаляет фильмы/состояния. Не запускай эту команду, если переносишь
+текущую базу.
+
+### Перенос текущей БД
+
+На старой машине сделай дамп:
+
+```bash
+mkdir -p backups
+docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > backups/hdrezka_filter_$(date +%Y%m%d_%H%M%S).dump
+```
+
+Скопируй дамп на VPS, например:
+
+```bash
+scp backups/hdrezka_filter_20260609_153444.dump user@VPS_IP:/opt/hdrezka_search/backups/
+```
+
+На VPS восстанови дамп вместо `init-db`:
+
+```bash
+cd /opt/hdrezka_search
+mkdir -p runtime backups
+docker compose up -d db
+docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < backups/hdrezka_filter_20260609_153444.dump
+docker compose up -d --build app
+```
+
+Если нужно переименовать существующих пользователей и сохранить их `seen`,
+`favorite`, `shown_items`, выставь новый `APP_USERS` в `.env` и запусти:
+
+```bash
+docker compose run --rm app python -m app.admin rename-existing-users
+docker compose restart app
+```
+
+Команда сопоставляет пользователей по текущему `id` и порядку в `APP_USERS`.
+Количество пользователей в базе и в `APP_USERS` должно совпадать.
 
 Открыть с телефона, подключенного к тому же Tailnet:
 
@@ -345,6 +394,16 @@ sudo ufw allow in on tailscale0 to any port 8000 proto tcp
 git pull
 docker compose up -d --build app
 ```
+
+### Фоновые задачи
+
+Пассивного фонового заполнения фильмов нет: crawler запускается кнопкой
+`Загрузить еще` в UI или CLI-командой `python -m app.crawler run`.
+
+Автообновление cookies через Playwright работает только если
+`REZKA_COOKIE_REFRESH_ENABLED=1`. При старте FastAPI запускается daemon thread,
+который обновляет cookies раз в день в `REZKA_COOKIE_REFRESH_HOUR:MINUTE` и
+пишет их в `REZKA_COOKIE_FILE`, обычно `runtime/rezka_cookie.txt`.
 
 ## Остановка сервера
 
