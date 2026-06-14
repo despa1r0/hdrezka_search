@@ -198,6 +198,26 @@ HDREZKA_DEBUG=1 .venv/bin/python -m uvicorn app.server:app --host 127.0.0.1 --po
 например `runtime/rezka_cookie.txt`. Если поставить `1`, refresh дополнительно
 заменит строку `REZKA_COOKIE=` в локальном `.env`.
 
+`REZKA_FETCH_MODE=requests` оставляет старый HTTP-клиент для Rezka. Если Rezka
+отдает `403` обычным HTTP-запросам, можно включить браузерный fetch:
+
+```env
+REZKA_FETCH_MODE=playwright
+REZKA_PLAYWRIGHT_BROWSER=firefox
+REZKA_PLAYWRIGHT_HEADLESS=1
+REZKA_PLAYWRIGHT_PROFILE_DIR=runtime/rezka_browser_profile
+```
+
+Опциональный proxy только для браузерных Rezka-запросов:
+
+```env
+REZKA_PLAYWRIGHT_PROXY=http://user:password@host:port
+```
+
+Crawler переиспользует один persistent browser profile в течение запуска и
+между запусками. Если Playwright на VPS все равно получает `403`, проблема
+обычно в исходящем IP/датацентре, а не в cookies.
+
 `CRAWLER_SOURCE=new` задает дефолтный источник CLI crawler-а. Значения:
 `new` ходит по `/new/`, `popular` по `/new/?filter=popular`, `best` по
 `/{section}/best/{slug}/`, `genres` по жанровым каталогам. В UI значение `auto`
@@ -269,6 +289,12 @@ docker compose run --rm app python -m app.cookie_refresher refresh
 
 ```bash
 docker compose run --rm app python -m app.crawler run --source popular --page-limit 1 --item-limit 10
+```
+
+Разовый запуск crawler-а через Playwright без изменения `.env`:
+
+```bash
+docker compose run --rm -e REZKA_FETCH_MODE=playwright -e REZKA_PLAYWRIGHT_BROWSER=firefox app python -m app.crawler run --source new --page-limit 1 --item-limit 5
 ```
 
 ## VPS + Tailscale

@@ -46,6 +46,20 @@ REZKA_COOKIE_REFRESH_WRITE_ENV = os.getenv("REZKA_COOKIE_REFRESH_WRITE_ENV", "")
     "yes",
     "on",
 }
+REZKA_FETCH_MODE = os.getenv("REZKA_FETCH_MODE", "requests").strip().lower()
+REZKA_PLAYWRIGHT_BROWSER = os.getenv("REZKA_PLAYWRIGHT_BROWSER", "firefox").strip().lower()
+REZKA_PLAYWRIGHT_HEADLESS = os.getenv("REZKA_PLAYWRIGHT_HEADLESS", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+REZKA_PLAYWRIGHT_PROFILE_DIR = os.getenv(
+    "REZKA_PLAYWRIGHT_PROFILE_DIR",
+    str(ROOT_DIR / "runtime" / "rezka_browser_profile"),
+)
+REZKA_PLAYWRIGHT_PROXY = os.getenv("REZKA_PLAYWRIGHT_PROXY", "").strip()
+REZKA_PLAYWRIGHT_TIMEOUT_MS = int(os.getenv("REZKA_PLAYWRIGHT_TIMEOUT_MS", "30000"))
 DEFAULT_RESULT_LIMIT = 100
 MAX_RESULT_LIMIT = 500
 REQUEST_TIMEOUT = 12

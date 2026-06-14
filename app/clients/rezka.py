@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import base64
+import atexit
 from functools import lru_cache
+from http import HTTPStatus
+from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
 
@@ -12,6 +16,13 @@ from app.config import (
     REQUEST_TIMEOUT,
     REZKA_ACCEPT_LANGUAGE,
     REZKA_BASE_URL,
+    REZKA_FETCH_MODE,
+    REZKA_PLAYWRIGHT_BROWSER,
+    REZKA_PLAYWRIGHT_HEADLESS,
+    REZKA_PLAYWRIGHT_PROFILE_DIR,
+    REZKA_PLAYWRIGHT_PROXY,
+    REZKA_PLAYWRIGHT_TIMEOUT_MS,
+    ROOT_DIR,
     get_rezka_cookie,
     USER_AGENT,
 )
@@ -59,6 +70,9 @@ GENRE_NAMES = {
     "adventures": "\u041f\u0440\u0438\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f",
     "historical": "\u0418\u0441\u0442\u043e\u0440\u0438\u0447\u0435\u0441\u043a\u0438\u0435",
 }
+
+_playwright_fetcher: PlaywrightHtmlFetcher | None = None
+_playwright_fetcher_lock = Lock()
 
 
 class RezkaClient:
@@ -140,13 +154,12 @@ class RezkaClient:
         return self._fetch_catalog_page(self.popular_page_url(page))
 
     def _fetch_catalog_page(self, url: str, slug: str = "") -> list[SearchItem]:
-        response = requests.get(
+        html = fetch_rezka_html(
             url,
-            headers=build_rezka_headers(referer=self.base_url + "/"),
-            timeout=REQUEST_TIMEOUT,
+            referer=self.base_url + "/",
+            wait_selector=".b-content__inline_item",
         )
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
 
         items: list[SearchItem] = []
         for node in soup.select(".b-content__inline_item"):
@@ -184,13 +197,12 @@ class RezkaClient:
 
 @lru_cache(maxsize=512)
 def fetch_page_metadata(url: str) -> dict[str, Any]:
-    response = requests.get(
+    html = fetch_rezka_html(
         url,
-        headers=build_rezka_headers(referer=REZKA_BASE_URL),
-        timeout=REQUEST_TIMEOUT,
+        referer=REZKA_BASE_URL,
+        wait_selector=".b-post__info, .b-post__description_text",
     )
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
 
     metadata: dict[str, Any] = {
         "genres": [],
@@ -293,3 +305,166 @@ def build_rezka_headers(referer: str = "") -> dict[str, str]:
     if cookie:
         headers["Cookie"] = cookie
     return headers
+
+
+def fetch_rezka_html(url: str, *, referer: str = "", wait_selector: str = "") -> str:
+    if REZKA_FETCH_MODE == "playwright":
+        return _get_playwright_fetcher().fetch(url, referer=referer, wait_selector=wait_selector)
+
+    response = requests.get(
+        url,
+        headers=build_rezka_headers(referer=referer),
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.text
+
+
+class PlaywrightHtmlFetcher:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._playwright: Any = None
+        self._browser: Any = None
+        self._context: Any = None
+
+    def fetch(self, url: str, *, referer: str = "", wait_selector: str = "") -> str:
+        with self._lock:
+            context = self._ensure_context()
+            page = context.new_page()
+            try:
+                response = page.goto(
+                    url,
+                    referer=referer or None,
+                    wait_until="domcontentloaded",
+                    timeout=REZKA_PLAYWRIGHT_TIMEOUT_MS,
+                )
+                status = response.status if response else 0
+                if status >= 400:
+                    try:
+                        reason = HTTPStatus(status).phrase
+                    except ValueError:
+                        reason = "HTTP Error"
+                    raise requests.HTTPError(f"{status} Client Error: {reason} for url: {url}")
+                if wait_selector:
+                    try:
+                        page.wait_for_selector(wait_selector, timeout=min(10000, REZKA_PLAYWRIGHT_TIMEOUT_MS))
+                    except Exception:
+                        pass
+                return page.content()
+            finally:
+                page.close()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._context is not None:
+                self._context.close()
+                self._context = None
+            if self._browser is not None:
+                self._browser.close()
+                self._browser = None
+            if self._playwright is not None:
+                self._playwright.stop()
+                self._playwright = None
+
+    def _ensure_context(self) -> Any:
+        if self._context is not None:
+            return self._context
+
+        from playwright.sync_api import sync_playwright
+
+        self._playwright = sync_playwright().start()
+        browser_type = getattr(self._playwright, _browser_name(), self._playwright.firefox)
+        launch_kwargs = _playwright_launch_kwargs()
+        context_kwargs = _playwright_context_kwargs()
+
+        profile_dir = Path(REZKA_PLAYWRIGHT_PROFILE_DIR)
+        if not profile_dir.is_absolute():
+            profile_dir = ROOT_DIR / profile_dir
+        profile_dir.parent.mkdir(parents=True, exist_ok=True)
+        self._context = browser_type.launch_persistent_context(
+            str(profile_dir),
+            **launch_kwargs,
+            **context_kwargs,
+        )
+        _add_cookie_header_to_context(self._context)
+        return self._context
+
+
+def _get_playwright_fetcher() -> PlaywrightHtmlFetcher:
+    global _playwright_fetcher
+    with _playwright_fetcher_lock:
+        if _playwright_fetcher is None:
+            _playwright_fetcher = PlaywrightHtmlFetcher()
+            atexit.register(_playwright_fetcher.close)
+        return _playwright_fetcher
+
+
+def _browser_name() -> str:
+    if REZKA_PLAYWRIGHT_BROWSER in {"chromium", "firefox", "webkit"}:
+        return REZKA_PLAYWRIGHT_BROWSER
+    return "firefox"
+
+
+def _playwright_launch_kwargs() -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"headless": REZKA_PLAYWRIGHT_HEADLESS}
+    proxy = _playwright_proxy_config()
+    if proxy:
+        kwargs["proxy"] = proxy
+    return kwargs
+
+
+def _playwright_context_kwargs() -> dict[str, Any]:
+    return {
+        "user_agent": USER_AGENT,
+        "locale": _locale_from_accept_language(REZKA_ACCEPT_LANGUAGE),
+        "extra_http_headers": {"Accept-Language": REZKA_ACCEPT_LANGUAGE},
+    }
+
+
+def _playwright_proxy_config() -> dict[str, str]:
+    if not REZKA_PLAYWRIGHT_PROXY:
+        return {}
+    parsed = urlparse(REZKA_PLAYWRIGHT_PROXY)
+    if not parsed.scheme or not parsed.hostname:
+        return {"server": REZKA_PLAYWRIGHT_PROXY}
+
+    server = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    config = {"server": server}
+    if parsed.username:
+        config["username"] = unquote(parsed.username)
+    if parsed.password:
+        config["password"] = unquote(parsed.password)
+    return config
+
+
+def _locale_from_accept_language(value: str) -> str:
+    return value.split(",", 1)[0].strip() or "en-US"
+
+
+def _add_cookie_header_to_context(context: Any) -> None:
+    cookie_header = get_rezka_cookie()
+    if not cookie_header:
+        return
+
+    parsed_base = urlparse(REZKA_BASE_URL)
+    domain = parsed_base.hostname or "rezka.ag"
+    cookies = []
+    for part in cookie_header.split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        if not name:
+            continue
+        cookies.append(
+            {
+                "name": name,
+                "value": value.strip(),
+                "domain": domain,
+                "path": "/",
+            }
+        )
+    if cookies:
+        context.add_cookies(cookies)
