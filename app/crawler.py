@@ -4,6 +4,7 @@ import argparse
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import requests
 
@@ -372,7 +373,7 @@ class RezkaCrawler:
             "title_ru": item.title,
             "title_original": metadata.get("originalTitle") or item.original_title or "",
             "year": _year_as_int(metadata.get("year") or item.year),
-            "content_type": _content_type(item.category, self.section),
+            "content_type": _content_type(item.category, self.section, item.url),
             "imdb_id": metadata.get("imdbId") or None,
             "imdb_rating": imdb_rating,
             "imdb_match_confidence": None,
@@ -506,13 +507,10 @@ def _year_as_int(value: Any) -> int | None:
     return int(year) if year else None
 
 
-def _content_type(category: str, section: str = "") -> str:
-    if section == "animation":
-        return "anime"
-    if section == "cartoons":
-        return "cartoon"
-    if section == "series":
-        return "series"
+def _content_type(category: str, section: str = "", url: str = "") -> str:
+    parsed_section = _section_from_url(url)
+    if parsed_section:
+        return parsed_section
 
     clean = normalize(str(category or ""))
     if "сериал" in clean or "serial" in clean or "series" in clean:
@@ -521,7 +519,27 @@ def _content_type(category: str, section: str = "") -> str:
         return "anime"
     if "мульт" in clean or "mult" in clean or "cartoon" in clean:
         return "cartoon"
+
+    if section == "animation":
+        return "anime"
+    if section == "cartoons":
+        return "cartoon"
+    if section == "series":
+        return "series"
     return "film"
+
+
+def _section_from_url(url: str) -> str:
+    path = urlparse(str(url or "")).path
+    if path.startswith("/animation/"):
+        return "anime"
+    if path.startswith("/cartoons/"):
+        return "cartoon"
+    if path.startswith("/series/"):
+        return "series"
+    if path.startswith("/films/"):
+        return "film"
+    return ""
 
 
 def _normalized_set(values: list[str]) -> set[str]:
