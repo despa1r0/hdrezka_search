@@ -32,6 +32,7 @@ from app.crawler import (
     section_from_params,
 )
 from app.notifier import notify_exception
+from app.passive_crawler import start_passive_crawler_scheduler
 from app.repositories.user_repository import ensure_app_users, get_all_users
 from app.services.search_service import SearchService
 from app.services.user_state_service import apply_movie_state
@@ -55,6 +56,7 @@ crawl_progress: dict[str, Any] = {
 @app.on_event("startup")
 def on_startup() -> None:
     start_cookie_refresh_scheduler()
+    start_passive_crawler_scheduler()
 
 
 @app.exception_handler(Exception)
