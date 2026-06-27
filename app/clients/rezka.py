@@ -5,7 +5,7 @@ import atexit
 from functools import lru_cache
 from http import HTTPStatus
 from pathlib import Path
-from threading import Lock
+from threading import Lock, get_ident, local
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
 
@@ -71,8 +71,9 @@ GENRE_NAMES = {
     "historical": "\u0418\u0441\u0442\u043e\u0440\u0438\u0447\u0435\u0441\u043a\u0438\u0435",
 }
 
-_playwright_fetcher: PlaywrightHtmlFetcher | None = None
 _playwright_fetcher_lock = Lock()
+_playwright_fetchers: list[PlaywrightHtmlFetcher] = []
+_playwright_fetcher_local = local()
 
 
 class RezkaClient:
@@ -380,6 +381,7 @@ class PlaywrightHtmlFetcher:
         profile_dir = Path(REZKA_PLAYWRIGHT_PROFILE_DIR)
         if not profile_dir.is_absolute():
             profile_dir = ROOT_DIR / profile_dir
+        profile_dir = profile_dir / f"thread-{get_ident()}"
         profile_dir.parent.mkdir(parents=True, exist_ok=True)
         self._context = browser_type.launch_persistent_context(
             str(profile_dir),
@@ -391,12 +393,24 @@ class PlaywrightHtmlFetcher:
 
 
 def _get_playwright_fetcher() -> PlaywrightHtmlFetcher:
-    global _playwright_fetcher
+    fetcher = getattr(_playwright_fetcher_local, "fetcher", None)
+    if fetcher is not None:
+        return fetcher
+
     with _playwright_fetcher_lock:
-        if _playwright_fetcher is None:
-            _playwright_fetcher = PlaywrightHtmlFetcher()
-            atexit.register(_playwright_fetcher.close)
-        return _playwright_fetcher
+        fetcher = getattr(_playwright_fetcher_local, "fetcher", None)
+        if fetcher is None:
+            fetcher = PlaywrightHtmlFetcher()
+            _playwright_fetcher_local.fetcher = fetcher
+            _playwright_fetchers.append(fetcher)
+            if len(_playwright_fetchers) == 1:
+                atexit.register(_close_playwright_fetchers)
+        return fetcher
+
+
+def _close_playwright_fetchers() -> None:
+    for fetcher in list(_playwright_fetchers):
+        fetcher.close()
 
 
 def _browser_name() -> str:
