@@ -26,6 +26,7 @@ from app.cookie_refresher import start_cookie_refresh_scheduler
 from app.crawler import (
     RezkaCrawler,
     best_slugs_from_params,
+    build_crawl_state_scope,
     filters_from_params,
     genre_slugs_from_params,
     section_from_params,
@@ -141,6 +142,13 @@ async def api_crawl(request: Request) -> JSONResponse:
         else:
             source = "genres" if genre_slugs else "new"
         section = section_from_params(params)
+        state_scope = build_crawl_state_scope(
+            params,
+            source=source,
+            section=section,
+            genre_slugs=genre_slugs,
+            best_slugs=best_slugs,
+        )
         _set_crawl_progress(
             running=True,
             message="Crawler стартовал.",
@@ -148,6 +156,7 @@ async def api_crawl(request: Request) -> JSONResponse:
             genreSlugs=genre_slugs,
             bestSlugs=best_slugs,
             section=section,
+            stateScope=state_scope,
             url="",
             catalogUrl="",
             stats={},
@@ -165,6 +174,7 @@ async def api_crawl(request: Request) -> JSONResponse:
             best_slugs=best_slugs,
             section=section,
             filters=filters_from_params(params),
+            state_scope=state_scope,
             progress_callback=_set_crawl_progress,
         )
         stats = await run_in_threadpool(crawler.run)
@@ -195,6 +205,7 @@ async def api_crawl(request: Request) -> JSONResponse:
         genreSlugs=genre_slugs,
         bestSlugs=best_slugs,
         section=section,
+        stateScope=state_scope,
         stats=stats.__dict__,
         error=stats.last_error,
     )
@@ -206,6 +217,7 @@ async def api_crawl(request: Request) -> JSONResponse:
             "genreSlugs": genre_slugs,
             "bestSlugs": best_slugs,
             "section": section,
+            "stateScope": state_scope,
             "stats": stats.__dict__,
         },
     )

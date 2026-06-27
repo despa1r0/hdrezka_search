@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -25,6 +27,16 @@ from app.services.search_service import GENRE_ALIASES
 from app.utils.text import normalize, parse_rating, parse_year, split_csv
 
 REZKA_SECTIONS = {"films", "series", "cartoons", "animation"}
+CRAWL_STATE_FILTER_FIELDS = (
+    "query",
+    "include_genres",
+    "ban_genres",
+    "include_countries",
+    "ban_countries",
+    "content_type",
+    "min_imdb",
+    "max_imdb",
+)
 
 
 @dataclass
@@ -66,6 +78,7 @@ class RezkaCrawler:
         best_slugs: list[str] | None = None,
         section: str = "films",
         filters: CrawlFilters | None = None,
+        state_scope: str = "",
         progress_callback: Callable[..., None] | None = None,
     ) -> None:
         self.page_limit = max(1, page_limit)
@@ -79,6 +92,7 @@ class RezkaCrawler:
         self.best_slugs = best_slugs or []
         self.section = section if section in REZKA_SECTIONS else "films"
         self.filters = filters or CrawlFilters()
+        self.state_scope = normalize_state_scope(state_scope)
         self.rezka = RezkaClient()
         self.imdb = ImdbClient()
         self.stats = CrawlStats()
@@ -120,8 +134,9 @@ class RezkaCrawler:
 
     def _crawl_listing(self, source: str) -> None:
         catalog_key = source
+        state_key = self._state_key(catalog_key)
         self.stats.catalogs += 1
-        set_catalog_state(catalog_key, status="running")
+        set_catalog_state(state_key, status="running")
 
         try:
             start_page = self._start_page(catalog_key)
@@ -139,6 +154,7 @@ class RezkaCrawler:
                 self._report(
                     stage="listing",
                     catalog_key=catalog_key,
+                    state_key=state_key,
                     source=source,
                     page=page,
                     url=page_url,
@@ -151,7 +167,7 @@ class RezkaCrawler:
                     else self.rezka.fetch_new_page(page)
                 )
                 self.stats.pages += 1
-                set_catalog_state(catalog_key, last_page=page, status="running")
+                set_catalog_state(state_key, last_page=page, status="running")
 
                 if not items:
                     break
@@ -167,14 +183,15 @@ class RezkaCrawler:
 
                 self._sleep()
 
-            set_catalog_state(catalog_key, status="done")
+            set_catalog_state(state_key, status="done")
         except Exception as exc:
             self.stats.errors += 1
             self.stats.last_error = str(exc)
-            set_catalog_state(catalog_key, status="error")
+            set_catalog_state(state_key, status="error")
             self._report(
                 stage="error",
                 catalog_key=catalog_key,
+                state_key=state_key,
                 source=source,
                 error=str(exc),
                 message=f"Crawler ошибка: {exc}",
@@ -188,13 +205,14 @@ class RezkaCrawler:
                 catalog_key=catalog_key,
                 level="error",
                 message="catalog crawl failed",
-                context={"source": source, "error": str(exc)},
+                context={"source": source, "state_key": state_key, "error": str(exc)},
             )
 
     def _crawl_best_catalog(self, slug: str) -> None:
         catalog_key = f"{self.section}:best:{slug}"
+        state_key = self._state_key(catalog_key)
         self.stats.catalogs += 1
-        set_catalog_state(catalog_key, status="running")
+        set_catalog_state(state_key, status="running")
 
         try:
             start_page = self._start_page(catalog_key)
@@ -208,6 +226,7 @@ class RezkaCrawler:
                 self._report(
                     stage="listing",
                     catalog_key=catalog_key,
+                    state_key=state_key,
                     slug=slug,
                     page=page,
                     url=page_url,
@@ -216,7 +235,7 @@ class RezkaCrawler:
                 )
                 items = self.rezka.fetch_best_page(slug, page, self.section)
                 self.stats.pages += 1
-                set_catalog_state(catalog_key, last_page=page, status="running")
+                set_catalog_state(state_key, last_page=page, status="running")
 
                 if not items:
                     break
@@ -232,14 +251,15 @@ class RezkaCrawler:
 
                 self._sleep()
 
-            set_catalog_state(catalog_key, status="done")
+            set_catalog_state(state_key, status="done")
         except Exception as exc:
             self.stats.errors += 1
             self.stats.last_error = str(exc)
-            set_catalog_state(catalog_key, status="error")
+            set_catalog_state(state_key, status="error")
             self._report(
                 stage="error",
                 catalog_key=catalog_key,
+                state_key=state_key,
                 slug=slug,
                 error=str(exc),
                 message=f"Crawler ошибка: {exc}",
@@ -253,13 +273,14 @@ class RezkaCrawler:
                 catalog_key=catalog_key,
                 level="error",
                 message="best catalog crawl failed",
-                context={"slug": slug, "error": str(exc)},
+                context={"slug": slug, "state_key": state_key, "error": str(exc)},
             )
 
     def _crawl_catalog(self, slug: str) -> None:
         catalog_key = f"{self.section}:{slug}"
+        state_key = self._state_key(catalog_key)
         self.stats.catalogs += 1
-        set_catalog_state(catalog_key, status="running")
+        set_catalog_state(state_key, status="running")
 
         try:
             start_page = self._start_page(catalog_key)
@@ -273,6 +294,7 @@ class RezkaCrawler:
                 self._report(
                     stage="listing",
                     catalog_key=catalog_key,
+                    state_key=state_key,
                     slug=slug,
                     page=page,
                     url=page_url,
@@ -281,7 +303,7 @@ class RezkaCrawler:
                 )
                 items = self.rezka.fetch_catalog_page(slug, page, self.section)
                 self.stats.pages += 1
-                set_catalog_state(catalog_key, last_page=page, status="running")
+                set_catalog_state(state_key, last_page=page, status="running")
 
                 if not items:
                     break
@@ -297,14 +319,15 @@ class RezkaCrawler:
 
                 self._sleep()
 
-            set_catalog_state(catalog_key, status="done")
+            set_catalog_state(state_key, status="done")
         except Exception as exc:
             self.stats.errors += 1
             self.stats.last_error = str(exc)
-            set_catalog_state(catalog_key, status="error")
+            set_catalog_state(state_key, status="error")
             self._report(
                 stage="error",
                 catalog_key=catalog_key,
+                state_key=state_key,
                 slug=slug,
                 error=str(exc),
                 message=f"Crawler ошибка: {exc}",
@@ -318,7 +341,7 @@ class RezkaCrawler:
                 catalog_key=catalog_key,
                 level="error",
                 message="catalog crawl failed",
-                context={"slug": slug, "error": str(exc)},
+                context={"slug": slug, "state_key": state_key, "error": str(exc)},
             )
 
     def _save_item(self, catalog_key: str, item: Any) -> None:
@@ -397,7 +420,7 @@ class RezkaCrawler:
             message=f"Сохранено: {item.title}",
         )
         set_catalog_state(
-            catalog_key,
+            self._state_key(catalog_key),
             last_movie_url=item.url,
             status="running",
         )
@@ -457,7 +480,7 @@ class RezkaCrawler:
     def _start_page(self, catalog_key: str) -> int:
         if not self.resume:
             return 1
-        state = get_catalog_state(catalog_key)
+        state = get_catalog_state(self._state_key(catalog_key))
         if not state:
             return 1
         try:
@@ -467,6 +490,11 @@ class RezkaCrawler:
         if last_page <= 0 and state.get("last_movie_url"):
             return 2
         return max(1, last_page + 1)
+
+    def _state_key(self, catalog_key: str) -> str:
+        if not self.state_scope:
+            return catalog_key
+        return f"{self.state_scope}:{catalog_key}"
 
     def _matches_filters(self, movie: dict[str, Any]) -> bool:
         if self.filters.content_type and movie["content_type"] != self.filters.content_type:
@@ -565,6 +593,35 @@ def filters_from_params(params: dict[str, str]) -> CrawlFilters:
     )
 
 
+def build_crawl_state_scope(
+    params: dict[str, str],
+    *,
+    source: str,
+    section: str,
+    genre_slugs: list[str],
+    best_slugs: list[str],
+) -> str:
+    payload: dict[str, Any] = {
+        "source": source,
+        "requested_source": str(params.get("crawl_source", "auto")).strip().lower() or "auto",
+        "section": section,
+        "genre_slugs": sorted({normalize(slug) for slug in genre_slugs if str(slug).strip()}),
+        "best_slugs": sorted({normalize(slug) for slug in best_slugs if str(slug).strip()}),
+        "filters": {},
+    }
+    filters = payload["filters"]
+    for field_name in CRAWL_STATE_FILTER_FIELDS:
+        value = params.get(field_name, "")
+        if field_name in {"include_genres", "ban_genres", "include_countries", "ban_countries"}:
+            filters[field_name] = sorted({normalize(item) for item in split_csv(str(value or ""))})
+        else:
+            filters[field_name] = normalize(str(value or ""))
+
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+    return f"ui:{source}:{section}:{digest}"
+
+
 def genre_slugs_from_params(params: dict[str, str]) -> list[str]:
     client = RezkaClient()
     include_genres = split_csv(params.get("include_genres", ""))
@@ -607,6 +664,17 @@ def _content_type_filter(value: str) -> str:
     if clean in {"", "all", "any"}:
         return ""
     return clean
+
+
+def normalize_state_scope(value: str) -> str:
+    clean = str(value or "").strip().lower()
+    allowed = []
+    for char in clean:
+        if char.isalnum() or char in {":", "-", "_"}:
+            allowed.append(char)
+        else:
+            allowed.append("-")
+    return "".join(allowed).strip("-")
 
 
 def run_crawler(args: argparse.Namespace) -> None:
