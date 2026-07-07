@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -37,3 +38,32 @@ jobs:
 
       - name: Verify Docker image builds
         run: docker build --tag hdrezka-search:ci .
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      - name: Build and publish image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/despa1r0/hdrezka_search:${{ github.sha }}
+            ghcr.io/despa1r0/hdrezka_search:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
