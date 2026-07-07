@@ -1,0 +1,135 @@
+services:
+  db:
+    image: postgres:16
+    container_name: hdrezka-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hdrezka_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-hdrezka_filter}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hdrezka_user} -d ${POSTGRES_DB:-hdrezka_filter}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - hdrezka-postgres-data:/var/lib/postgresql/data
+    networks:
+      - hdrezka-net
+    restart: unless-stopped
+
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: hdrezka-gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: surfshark
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: ${SURFSHARK_WIREGUARD_PRIVATE_KEY}
+      WIREGUARD_ADDRESSES: ${SURFSHARK_WIREGUARD_ADDRESSES}
+      SERVER_COUNTRIES: ${SURFSHARK_SERVER_COUNTRIES:-Poland}
+      HTTPPROXY: "on"
+      HTTPPROXY_LISTENING_ADDRESS: ":8888"
+      HTTPPROXY_STEALTH: "on"
+      TZ: Europe/Warsaw
+    networks:
+      - hdrezka-net
+    restart: unless-stopped
+
+  init-db:
+    image: ghcr.io/despa1r0/hdrezka_search:${IMAGE_TAG:-latest}
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hdrezka_user}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-hdrezka_filter}
+    command: ["python", "-m", "app.admin", "init-empty-db"]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./runtime:/app/runtime
+    networks:
+      - hdrezka-net
+    profiles:
+      - tools
+
+  app:
+    image: ghcr.io/despa1r0/hdrezka_search:${IMAGE_TAG:-latest}
+    container_name: hdrezka-app
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hdrezka_user}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-hdrezka_filter}
+      REZKA_FETCH_MODE: playwright
+      REZKA_PLAYWRIGHT_BROWSER: firefox
+      REZKA_PLAYWRIGHT_HEADLESS: "1"
+      REZKA_PLAYWRIGHT_PROXY: http://gluetun:8888
+    ports:
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      gluetun:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    volumes:
+      - ./runtime:/app/runtime
+    networks:
+      - hdrezka-net
+    restart: unless-stopped
+
+  candidate:
+    image: ghcr.io/despa1r0/hdrezka_search:${IMAGE_TAG:-latest}
+    container_name: hdrezka-app-candidate
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hdrezka_user}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-hdrezka_filter}
+      REZKA_FETCH_MODE: playwright
+      REZKA_PLAYWRIGHT_BROWSER: firefox
+      REZKA_PLAYWRIGHT_HEADLESS: "1"
+      REZKA_PLAYWRIGHT_PROXY: http://gluetun:8888
+      PASSIVE_CRAWLER_ENABLED: "0"
+      REZKA_COOKIE_REFRESH_ENABLED: "0"
+      TELEGRAM_ALERTS_ENABLED: "0"
+    ports:
+      - "127.0.0.1:${CANDIDATE_PORT:-8004}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      gluetun:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    volumes:
+      - ./runtime:/app/runtime
+    networks:
+      - hdrezka-net
+    restart: "no"
+    profiles:
+      - candidate
+
+volumes:
+  hdrezka-postgres-data:
+
+networks:
+  hdrezka-net:
