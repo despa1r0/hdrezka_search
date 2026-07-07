@@ -15,6 +15,13 @@ def get_connection() -> psycopg.Connection:
     return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=2)
 
 
+def check_database() -> None:
+    """Raise an exception when PostgreSQL is not ready to serve queries."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+
+
 def fetch_one(sql: str, params: Params = None) -> dict[str, Any] | None:
     with get_connection() as conn:
         with conn.cursor() as cursor:

@@ -31,6 +31,7 @@ from app.crawler import (
     genre_slugs_from_params,
     section_from_params,
 )
+from app.database import check_database
 from app.notifier import notify_exception
 from app.passive_crawler import start_passive_crawler_scheduler
 from app.repositories.user_repository import ensure_app_users, get_all_users
@@ -69,6 +70,24 @@ async def api_unhandled_exception(_: Request, exc: Exception) -> JSONResponse:
 @app.get("/index.html")
 def index() -> FileResponse:
     return FileResponse(TEMPLATES_DIR / "index.html", media_type="text/html; charset=utf-8")
+
+
+@app.get("/healthz")
+def healthz() -> JSONResponse:
+    return _json(HTTPStatus.OK, {"status": "ok"})
+
+
+@app.get("/readyz")
+def readyz() -> JSONResponse:
+    try:
+        check_database()
+    except Exception:
+        return _json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {"status": "not_ready", "database": "unavailable"},
+        )
+
+    return _json(HTTPStatus.OK, {"status": "ready", "database": "ok"})
 
 
 @app.get("/api/users")
