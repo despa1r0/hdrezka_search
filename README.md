@@ -18,6 +18,12 @@
 - автообновление Rezka cookies через Playwright/headless;
 - Telegram-алерты для падений crawler-а, FastAPI и cookie-refresh;
 - Dockerfile и Docker Compose для запуска web-приложения с PostgreSQL;
+- GitHub Actions CI с проверкой тестов и Docker build;
+- публикация production image в GitHub Container Registry;
+- SSH-deploy на VPS через GitHub Actions с candidate-контейнером и rollback;
+- синхронизация production infra-файлов на VPS перед deploy;
+- systemd backup timer для PostgreSQL;
+- Grafana + Loki + Promtail для централизованных Docker logs;
 - локальные seed/reset/test скрипты без сетевых запросов.
 
 ## Установка
@@ -327,6 +333,92 @@ docker compose run --rm app python -m app.crawler run --source popular --page-li
 docker compose run --rm -e REZKA_FETCH_MODE=playwright -e REZKA_PLAYWRIGHT_BROWSER=firefox app python -m app.crawler run --source new --page-limit 1 --item-limit 5
 ```
 
+## Git и GitHub SSH
+
+Для обычного `git push` удобнее использовать SSH remote. Сначала создай или
+проверь локальный ключ:
+
+```bash
+ssh-keygen -t ed25519 -C "your_email@example.com"
+cat ~/.ssh/id_ed25519.pub
+```
+
+Публичный ключ добавь в GitHub account: Settings -> SSH and GPG keys. После
+этого переключи remote:
+
+```bash
+git remote set-url origin git@github.com:despa1r0/hdrezka_search.git
+ssh -T git@github.com
+git push
+```
+
+Если `ssh -T git@github.com` отвечает, что GitHub успешно узнал пользователя,
+обычный push/pull будет ходить через SSH.
+
+## CI/CD
+
+GitHub Actions workflow лежит в `.github/workflows/ci.yml`.
+
+Что делает workflow:
+
+- `test`: ставит Python-зависимости, компилирует код, запускает health endpoint
+  tests и проверяет `docker build`;
+- `publish`: на `master` собирает и публикует image в
+  `ghcr.io/despa1r0/hdrezka_search`;
+- `deploy`: при `CD_ENABLED=true` копирует production infra-файлы на VPS,
+  затем запускает `scripts/deploy.sh` с immutable image tag по Git SHA.
+
+Для включения CD нужны GitHub secrets:
+
+```text
+VPS_SSH_PRIVATE_KEY
+VPS_KNOWN_HOSTS
+VPS_HOST
+VPS_PORT
+VPS_USER
+```
+
+И repository variable:
+
+```text
+CD_ENABLED=true
+```
+
+`VPS_SSH_PRIVATE_KEY` должен быть отдельным deploy-ключом для доступа GitHub
+Actions к VPS. Public key от него добавь на VPS в
+`/home/deploy/.ssh/authorized_keys` или в `authorized_keys` того пользователя,
+который указан в `VPS_USER`.
+
+`VPS_KNOWN_HOSTS` можно получить с рабочей машины:
+
+```bash
+ssh-keyscan -p 22 VPS_HOST
+```
+
+Если `VPS_PORT` не задан, deploy script использует `22`.
+
+Deploy job перед обновлением app синхронизирует на VPS:
+
+```text
+docker-compose.prod.yml
+docker-compose.observability.yml
+scripts/deploy.sh
+scripts/backup-db.sh
+ops/
+```
+
+Локальные VPS-файлы `.env`, `runtime/` и `backups/` не входят в архив
+синхронизации и не перезаписываются.
+
+После успешного push в `master`, если `CD_ENABLED=true`, цепочка такая:
+
+```text
+test -> publish image to GHCR -> sync infra files -> candidate healthcheck -> app update
+```
+
+Если `test`, `publish` или candidate healthcheck падают, production app не
+должен замениться на новую версию.
+
 ## VPS + Tailscale
 
 Рекомендуемый вариант: Tailscale ставится на сам VPS, а Docker публикует
@@ -359,6 +451,15 @@ cd hdrezka_search
 cp .env.example .env
 nano .env
 ```
+
+Для production layout лучше держать проект в `/opt/hdrezka_search`:
+
+```bash
+sudo mkdir -p /opt/hdrezka_search
+sudo chown "$USER:$USER" /opt/hdrezka_search
+```
+
+CD и backup scripts ожидают именно этот путь.
 
 В `.env` на VPS выставь. `APP_USERS` можно сразу заменить на новые имена:
 
@@ -451,6 +552,16 @@ git pull
 docker compose up -d --build app
 ```
 
+Для production compose с уже опубликованным GHCR image:
+
+```bash
+cd /opt/hdrezka_search
+IMAGE_TAG=latest docker compose -f docker-compose.prod.yml up -d db gluetun app
+```
+
+После включения CD руками обновлять app обычно не нужно: push в `master`
+соберет image и deploy job перезапустит `app` на VPS.
+
 ### Фоновые задачи
 
 Пассивный crawler работает только если `PASSIVE_CRAWLER_ENABLED=1`. При старте
@@ -464,6 +575,126 @@ FastAPI запускается daemon thread, который раз в `PASSIVE_
 который обновляет cookies раз в день в `REZKA_COOKIE_REFRESH_HOUR:MINUTE` и
 пишет их в `REZKA_COOKIE_FILE`, обычно `runtime/rezka_cookie.txt`.
 
+### PostgreSQL backups
+
+Backup script лежит в `scripts/backup-db.sh`. Он делает `pg_dump -Fc`,
+проверяет dump через `pg_restore --list`, пишет `.sha256` и удаляет старые
+backup-файлы по retention.
+
+Ручная проверка на VPS:
+
+```bash
+cd /opt/hdrezka_search
+BACKUP_RETENTION_DAYS=14 scripts/backup-db.sh
+ls -lh backups
+```
+
+Systemd units лежат в `ops/systemd/`. Установка:
+
+```bash
+sudo cp ops/systemd/hdrezka-backup.service /etc/systemd/system/
+sudo cp ops/systemd/hdrezka-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hdrezka-backup.timer
+systemctl list-timers hdrezka-backup.timer
+```
+
+Перед включением проверь, что `User=` и `Group=` в
+`hdrezka-backup.service` совпадают с пользователем на VPS, который имеет
+доступ к Docker.
+
+## Monitoring и логи
+
+Проект включает минимальный observability stack:
+
+```text
+Grafana  -> UI для просмотра логов
+Loki     -> хранение логов
+Promtail -> сбор Docker container logs
+```
+
+Конфиги лежат в:
+
+```text
+docker-compose.observability.yml
+ops/loki/loki.yml
+ops/promtail/promtail.yml
+ops/grafana/provisioning/datasources/loki.yml
+```
+
+Добавь в production `.env` значения. `OBS_BIND` лучше ставить на Tailscale IP,
+а не на публичный адрес:
+
+```env
+OBS_BIND=TAILSCALE_IP_СЮДА
+GRAFANA_PORT=3000
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=replace_with_strong_password
+LOKI_PORT=3100
+```
+
+Поднять observability на VPS:
+
+```bash
+cd /opt/hdrezka_search
+docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml up -d loki promtail grafana
+```
+
+Проверить:
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml ps
+docker logs --tail 100 hdrezka-promtail
+docker logs --tail 100 hdrezka-loki
+docker logs --tail 100 hdrezka-grafana
+```
+
+Открыть Grafana:
+
+```text
+http://TAILSCALE_IP_СЮДА:3000/
+```
+
+Datasource Loki создается автоматически. В Grafana открой Explore и выбери
+`Loki`. Примеры запросов:
+
+```logql
+{container="hdrezka-app"}
+{service="app"}
+{container="hdrezka-postgres"}
+{container="hdrezka-gluetun"}
+```
+
+Loki настроен на файловое хранение и retention 7 дней:
+
+```yaml
+retention_period: 168h
+```
+
+Метрики CPU/RAM/disk/container пока не добавлены. Для них отдельным следующим
+шагом можно добавить Prometheus/cAdvisor/node-exporter.
+
+Остановить observability:
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml stop grafana promtail loki
+```
+
+## Порядок следующих работ
+
+Текущий лучший порядок:
+
+1. Настроить обычный GitHub SSH push с локальной машины.
+2. Довести VPS до production layout `/opt/hdrezka_search`.
+3. Проверить production compose вручную: `db`, `gluetun`, `app`, `/readyz`.
+4. Настроить GitHub Actions secrets/vars и включить CD.
+5. Запустить workflow вручную и проверить candidate deploy + rollback path.
+6. Установить и проверить PostgreSQL backups.
+7. Поднять Grafana/Loki/Promtail на VPS.
+8. Добавить dashboards/alerts поверх Loki.
+9. Добавить метрики через Prometheus/cAdvisor/node-exporter, если понадобятся.
+10. Вернуться к app-улучшениям: retry/backoff, crawler limits, расширение тестов.
+
 ## Остановка сервера
 
 Остановить `uvicorn` в терминале через `Ctrl+C`.
@@ -471,7 +702,8 @@ FastAPI запускается daemon thread, который раз в `PASSIVE_
 ## Проверки
 
 ```bash
-.venv/bin/python -m py_compile main.py app/*.py app/**/*.py tests_local/*.py
+.venv/bin/python -m compileall -q app tests_local main.py
+.venv/bin/python -m unittest tests_local.test_health_endpoints
 .venv/bin/python tests_local/test_search_logic.py
 ```
 
@@ -490,12 +722,19 @@ app/
   server.py
 migrations/
   001_init.sql
+ops/
+  grafana/provisioning/  # Grafana datasource provisioning
+  loki/                  # Loki config
+  promtail/              # Docker log collection config
+  systemd/               # backup timer/service
 static/
   app.js
   styles.css
 templates/
   index.html
 tests_local/
+docker-compose.observability.yml
+docker-compose.prod.yml
 main.py
 requirements.txt
 ```

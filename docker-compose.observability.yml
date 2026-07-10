@@ -1,0 +1,52 @@
+services:
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: hdrezka-loki
+    command: ["-config.file=/etc/loki/loki.yml"]
+    ports:
+      - "${OBS_BIND:-127.0.0.1}:${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./ops/loki/loki.yml:/etc/loki/loki.yml:ro
+      - hdrezka-loki-data:/loki
+    networks:
+      - hdrezka-net
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: hdrezka-promtail
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./ops/promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    networks:
+      - hdrezka-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: hdrezka-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "${OBS_BIND:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - hdrezka-grafana-data:/var/lib/grafana
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - loki
+    networks:
+      - hdrezka-net
+    restart: unless-stopped
+
+volumes:
+  hdrezka-loki-data:
+  hdrezka-grafana-data:
+
+networks:
+  hdrezka-net:

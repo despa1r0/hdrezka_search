@@ -89,6 +89,35 @@ jobs:
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Sync deployment files on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          tar -czf /tmp/hdrezka-deploy-files.tgz \
+            docker-compose.prod.yml \
+            docker-compose.observability.yml \
+            scripts/deploy.sh \
+            scripts/backup-db.sh \
+            ops
+
+          scp \
+            -i ~/.ssh/id_ed25519 \
+            -P "${VPS_PORT:-22}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            /tmp/hdrezka-deploy-files.tgz \
+            "$VPS_USER@$VPS_HOST:/tmp/hdrezka-deploy-files.tgz"
+
+          ssh \
+            -i ~/.ssh/id_ed25519 \
+            -p "${VPS_PORT:-22}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "mkdir -p /opt/hdrezka_search && tar -xzf /tmp/hdrezka-deploy-files.tgz -C /opt/hdrezka_search && chmod +x /opt/hdrezka_search/scripts/deploy.sh /opt/hdrezka_search/scripts/backup-db.sh && rm -f /tmp/hdrezka-deploy-files.tgz"
+
       - name: Deploy immutable image on VPS
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
