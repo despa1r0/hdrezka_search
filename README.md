@@ -665,6 +665,24 @@ Datasource Loki создается автоматически. В Grafana отк
 {container="hdrezka-gluetun"}
 ```
 
+Passive crawler пишет JSON-строки в stdout app-контейнера. Смотреть его:
+
+```logql
+{container="hdrezka-app"} |= "\"component\": \"passive_crawler\""
+```
+
+Только ошибки passive crawler-а:
+
+```logql
+{container="hdrezka-app"} |= "\"component\": \"passive_crawler\"" |= "\"level\": \"error\""
+```
+
+Завершенные циклы:
+
+```logql
+{container="hdrezka-app"} |= "\"event\": \"cycle_finished\""
+```
+
 Loki настроен на файловое хранение и retention 7 дней:
 
 ```yaml

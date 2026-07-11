@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from app.clients.rezka import GENRE_NAMES
 from app.config import (
@@ -53,6 +56,14 @@ def start_passive_crawler_scheduler() -> None:
     _scheduler_started = True
     thread = threading.Thread(target=_scheduler_loop, name="passive-crawler", daemon=True)
     thread.start()
+    _passive_log(
+        "scheduler_started",
+        interval_seconds=PASSIVE_CRAWLER_INTERVAL_SECONDS,
+        initial_delay_seconds=PASSIVE_CRAWLER_INITIAL_DELAY_SECONDS,
+        page_limit=PASSIVE_CRAWLER_PAGE_LIMIT,
+        item_limit=PASSIVE_CRAWLER_ITEM_LIMIT,
+        state_scope=normalize_state_scope(PASSIVE_CRAWLER_STATE_SCOPE),
+    )
 
 
 def _scheduler_loop() -> None:
@@ -64,6 +75,7 @@ def _scheduler_loop() -> None:
         try:
             run_passive_crawl_once()
         except Exception as exc:
+            _passive_log("cycle_failed", level="error", error=str(exc))
             notify_exception("Passive crawler failed", exc)
             log_crawl_event(
                 catalog_key="passive",
@@ -76,10 +88,21 @@ def _scheduler_loop() -> None:
 
 def run_passive_crawl_once() -> None:
     if not _run_lock.acquire(blocking=False):
+        _passive_log("cycle_skipped", reason="already_running")
         return
     try:
         catalog = _pick_next_catalog()
         filters = CrawlFilters(ban_countries=split_csv(PASSIVE_CRAWLER_BAN_COUNTRIES))
+        state_scope = normalize_state_scope(PASSIVE_CRAWLER_STATE_SCOPE)
+        state_key = f"{state_scope}:{catalog.catalog_key}"
+        _passive_log(
+            "cycle_started",
+            catalog=catalog.__dict__,
+            state_key=state_key,
+            ban_countries=filters.ban_countries,
+            page_limit=PASSIVE_CRAWLER_PAGE_LIMIT,
+            item_limit=PASSIVE_CRAWLER_ITEM_LIMIT,
+        )
         crawler = RezkaCrawler(
             page_limit=PASSIVE_CRAWLER_PAGE_LIMIT,
             item_limit=PASSIVE_CRAWLER_ITEM_LIMIT,
@@ -92,12 +115,12 @@ def run_passive_crawl_once() -> None:
             filters=filters,
             imdb_enabled=PASSIVE_CRAWLER_IMDB_ITEM_LIMIT > 0,
             imdb_item_limit=PASSIVE_CRAWLER_IMDB_ITEM_LIMIT,
-            state_scope=normalize_state_scope(PASSIVE_CRAWLER_STATE_SCOPE),
+            state_scope=state_scope,
         )
         stats = crawler.run()
-        state_key = f"{normalize_state_scope(PASSIVE_CRAWLER_STATE_SCOPE)}:{catalog.catalog_key}"
         if stats.pages > 0 and stats.seen == 0:
             set_catalog_state(state_key, status="exhausted")
+            _passive_log("catalog_exhausted", catalog=catalog.__dict__, state_key=state_key)
         log_crawl_event(
             catalog_key=state_key,
             message="passive crawl finished",
@@ -107,8 +130,26 @@ def run_passive_crawl_once() -> None:
                 "ban_countries": filters.ban_countries,
             },
         )
+        _passive_log(
+            "cycle_finished",
+            catalog=catalog.__dict__,
+            state_key=state_key,
+            stats=stats.__dict__,
+            ban_countries=filters.ban_countries,
+        )
     finally:
         _run_lock.release()
+
+
+def _passive_log(event: str, *, level: str = "info", **payload: Any) -> None:
+    record = {
+        "component": "passive_crawler",
+        "event": event,
+        "level": level,
+        "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        **payload,
+    }
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True), flush=True)
 
 
 def _pick_next_catalog() -> PassiveCatalog:
