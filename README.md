@@ -1,39 +1,39 @@
 # HdRezka DB Filter
 
-Локальная страница поиска по собственной PostgreSQL-базе фильмов. Обычный поиск не делает live-запросы к Rezka или IMDb: данные сначала должны быть загружены в БД.
+A local search page querying a custom PostgreSQL database of movies. Regular search does not make live queries to Rezka or IMDb: data must be imported into the database first.
 
-## Возможности
+## Features
 
-- пользователи задаются через `APP_USERS`;
-- отдельные состояния фильмов для каждого пользователя: `seen`, `hidden`, `favorite`, `watchlist`;
-- история показанных результатов по `user_id + query_hash`;
-- фильтры жанров и стран на включение;
-- бан-листы жанров и стран;
-- фильтр IMDb min/max;
-- сортировка IMDb от высокой или от низкой;
-- случайная подборка с сохранением всех фильтров;
-- режим карточек и текстовый режим;
-- темная тема;
-- дозагрузка новинок, популярных или жанровых каталогов кнопкой `Загрузить еще`;
-- автообновление Rezka cookies через Playwright/headless;
-- Telegram-алерты для падений crawler-а, FastAPI и cookie-refresh;
-- Dockerfile и Docker Compose для запуска web-приложения с PostgreSQL;
-- GitHub Actions CI с проверкой тестов и Docker build;
-- публикация production image в GitHub Container Registry;
-- SSH-deploy на VPS через GitHub Actions с candidate-контейнером и rollback;
-- синхронизация production infra-файлов на VPS перед deploy;
-- systemd backup timer для PostgreSQL;
-- Grafana + Loki + Promtail для централизованных Docker logs;
-- локальные seed/reset/test скрипты без сетевых запросов.
+- users are configured via `APP_USERS`;
+- individual movie states for each user: `seen`, `hidden`, `favorite`, `watchlist`;
+- search results history by `user_id + query_hash`;
+- inclusion filters for genres and countries;
+- exclusion ban-lists for genres and countries;
+- IMDb rating min/max filter;
+- IMDb rating sorting (highest first or lowest first);
+- random movie selection preserving all active filters;
+- card mode and text list mode;
+- dark theme;
+- loading more new releases, popular movies, or genre catalogs via `Load More` button;
+- automatic Rezka cookies update via Playwright/headless;
+- Telegram alerts for crawler, FastAPI, and cookie-refresh failures;
+- Dockerfile and Docker Compose to run the web application with PostgreSQL;
+- GitHub Actions CI with tests verification and Docker build;
+- publication of production images to GitHub Container Registry;
+- SSH deployment to VPS via GitHub Actions with candidate container and rollback;
+- production infrastructure files synchronization on VPS before deployment;
+- systemd backup timer for PostgreSQL;
+- Grafana + Loki + Promtail for centralized Docker logs;
+- local seed/reset/test scripts without network requests.
 
-## Установка
+## Installation
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-## База
+## Database
 
 ```bash
 docker run --name hdrezka-postgres \
@@ -48,9 +48,9 @@ export DATABASE_URL="postgresql://hdrezka_user:password@localhost:5432/hdrezka_f
 psql "$DATABASE_URL" -f migrations/001_init.sql
 ```
 
-Если Rezka возвращает `403`, открой `https://rezka.ag/new/` в браузере,
-сделай DevTools -> Network -> Copy as cURL и перенеси актуальные значения
-`User-Agent`, `Accept-Language` и `Cookie` в `.env`:
+If Rezka returns `403`, open `https://rezka.ag/new/` in a browser,
+go to DevTools -> Network -> Copy as cURL, and copy the actual values of
+`User-Agent`, `Accept-Language`, and `Cookie` to `.env`:
 
 ```env
 REZKA_USER_AGENT=...
@@ -58,16 +58,16 @@ REZKA_ACCEPT_LANGUAGE=...
 REZKA_COOKIE=...
 ```
 
-Cookie можно обновить через Playwright/headless:
+Cookies can be updated via Playwright/headless:
 
 ```bash
 .venv/bin/python -m playwright install chromium
 .venv/bin/python -m app.cookie_refresher refresh
 ```
 
-По умолчанию cookie пишется в `runtime/rezka_cookie.txt`, а приложение читает
-сначала этот файл, затем `REZKA_COOKIE` из `.env`. Для ежедневного обновления
-в 02:00 при старте FastAPI:
+By default, the cookie is written to `runtime/rezka_cookie.txt`. The application reads
+this file first, and falls back to `REZKA_COOKIE` from `.env`. To update daily
+at 02:00 when FastAPI starts:
 
 ```env
 REZKA_COOKIE_REFRESH_ENABLED=1
@@ -76,20 +76,19 @@ REZKA_COOKIE_REFRESH_MINUTE=0
 REZKA_COOKIE_FILE=runtime/rezka_cookie.txt
 ```
 
-Если хочешь дополнительно перезаписывать строку `REZKA_COOKIE=` в локальном
-`.env`, включи:
+If you also want to overwrite the `REZKA_COOKIE=` line in the local `.env` file, enable:
 
 ```env
 REZKA_COOKIE_REFRESH_WRITE_ENV=1
 ```
 
-Тестовые данные:
+Test data:
 
 ```bash
 .venv/bin/python tests_local/seed_test_data.py
 ```
 
-Сброс тестовых фильмов и пользовательских состояний:
+Reset test movies and user states:
 
 ```bash
 .venv/bin/python tests_local/reset_test_db.py
@@ -101,33 +100,30 @@ REZKA_COOKIE_REFRESH_WRITE_ENV=1
 .venv/bin/python -m app.crawler run
 ```
 
-В интерфейсе кнопка `Загрузить еще` делает маленькую дозагрузку в БД.
-Если в текущем поиске выбран жанр, crawler идет в соответствующий каталог
-Rezka, например `/films/detective/`, `/series/detective/`,
-`/cartoons/detective/` или `/animation/detective/`, и дополнительно применяет текущие
-include/ban фильтры перед сохранением. Если жанр не выбран, используется
-источник новинок `/new/`. В поле `Источник дозагрузки` можно явно выбрать
-`Новинки` или `Популярное по фильтрам`. Если для текущего запроса распознан
-жанр, популярное ходит в каталог `best`, например:
+In the interface, the `Load More` button performs a small incremental import into the database.
+If a genre is selected in the current search, the crawler queries the corresponding Rezka catalog,
+for example `/films/detective/`, `/series/detective/`, `/cartoons/detective/` or `/animation/detective/`,
+and applies current include/ban filters before saving. If no genre is selected, it uses the new releases source `/new/`.
+In the "Import Source" field, you can explicitly choose "New Releases" or "Popular by filters".
+If a genre is recognized for the current request, popular queries the `best` catalog, for example:
 
 ```text
 https://rezka.ag/films/best/detective/
 https://rezka.ag/films/best/detective/page/2/
 ```
 
-Для `Тип = Аниме` используется раздел `/animation/`, например
-`/animation/best/horror/`; для мультфильмов `/cartoons/`, для сериалов
-`/series/`.
+For `Type = Anime`, the `/animation/` section is used, e.g., `/animation/best/horror/`;
+for cartoons, `/cartoons/` is used, and for series, `/series/` is used.
 
-Страны не добавляются в URL и применяются только как фильтр после чтения
-страницы фильма. Если жанр не распознан, используется общий popular:
+Countries are not added to the URL and are applied only as a post-filter after reading the movie page.
+If the genre is not recognized, the general popular feed is used:
 
 ```text
 https://rezka.ag/new/?filter=popular
 https://rezka.ag/new/page/2/?filter=popular
 ```
 
-По умолчанию один клик дозагрузки ограничен:
+By default, a single import click is limited to:
 
 ```env
 CRAWLER_LOAD_MORE_PAGE_LIMIT=3
@@ -136,22 +132,21 @@ CRAWLER_LOAD_MORE_IMDB_ITEM_LIMIT=0
 CRAWLER_LOAD_MORE_SLEEP_SECONDS=0
 ```
 
-База наполняется через кнопку `Загрузить еще`, CLI `python -m app.crawler run`
-или опциональный пассивный crawler. Scheduler cookie-refresh обновляет только
-cookies для Rezka и не запускает crawler.
+The database is populated via the `Load More` button, the CLI command `python -m app.crawler run`,
+or the optional passive crawler. The cookie-refresh scheduler only updates cookies for Rezka
+and does not run the crawler.
 
-`CRAWLER_LOAD_MORE_ITEM_LIMIT` означает целевое количество сохраненных подходящих
-фильмов, а не просмотренных карточек. Crawler применяет текущие genre/country,
-ban-фильтры, content type и IMDb-диапазон перед сохранением. При узких фильтрах, например
-`Детективы + Великобритания`, crawler может просмотреть много кандидатов,
-пропустить неподходящие страны и сохранить меньше лимита, если за
-`CRAWLER_LOAD_MORE_PAGE_LIMIT` страниц подходящих фильмов мало.
+`CRAWLER_LOAD_MORE_ITEM_LIMIT` specifies the target count of saved matching movies,
+not the number of scanned cards. The crawler applies the current genre/country inclusion,
+exclusion filters, content type, and IMDb range before saving. For narrow filters,
+like `Detective + UK`, the crawler may check many candidates, skip non-matching countries,
+and save less than the limit if there are too few matching movies within `CRAWLER_LOAD_MORE_PAGE_LIMIT` pages.
 
-UI-дозагрузка хранит resume-прогресс отдельно для каждого набора фильтров и
-источника. Поэтому разные запросы не сбивают друг другу `last_page`, но повторный
-клик с теми же фильтрами продолжает идти глубже по тому же каталогу.
+The UI incremental load stores resume progress separately for each set of filters and source.
+Thus, different requests do not interfere with each other's `last_page`, but repeated clicks
+with the exact same filters will continue going deeper into the same catalog.
 
-Пассивный crawler включается отдельно и по умолчанию выключен:
+The passive crawler is enabled separately and is disabled by default:
 
 ```env
 PASSIVE_CRAWLER_ENABLED=1
@@ -159,60 +154,58 @@ PASSIVE_CRAWLER_INTERVAL_SECONDS=3600
 PASSIVE_CRAWLER_INITIAL_DELAY_SECONDS=300
 PASSIVE_CRAWLER_PAGE_LIMIT=2
 PASSIVE_CRAWLER_ITEM_LIMIT=10
-PASSIVE_CRAWLER_BAN_COUNTRIES=Россия,СССР
+PASSIVE_CRAWLER_BAN_COUNTRIES=Russia,USSR
 ```
 
-Он запускается в фоне вместе с FastAPI, выбирает один каталог за цикл и берет
-тот каталог, который меньше всего продвинулся по `last_page`. Resume-прогресс
-хранится отдельно в `catalog_crawl_state` с префиксом `passive:v1`, поэтому
-не мешает UI-дозагрузке. По умолчанию crawler обходит `new`, `popular`,
-жанровые и best-каталоги для `films`, `series`, `cartoons`, `animation`.
-Фильмы из стран `Россия` и `СССР` отбрасываются до записи в БД.
-Если каталог вернул пустую страницу, пассивный crawler помечает его как
-`exhausted` и больше не выбирает его в обычной ротации.
+It runs in the background alongside FastAPI, selecting one catalog per cycle, picking the catalog
+that has progressed the least in terms of `last_page`. The resume progress is stored separately
+in `catalog_crawl_state` with the prefix `passive:v1`, so it does not interfere with the UI import.
+By default, the crawler cycles through `new`, `popular`, genre, and best catalogs for `films`,
+`series`, `cartoons`, and `animation`. Movies from countries like `Russia` and `USSR` are discarded before writing to the DB.
+If a catalog returns an empty page, the passive crawler marks it as `exhausted` and excludes it from the regular rotation.
 
-Разово проверить пассивный crawler:
+To manually run the passive crawler once:
 
 ```bash
 docker compose run --rm app python -m app.passive_crawler run-once
 ```
 
-Crawler сохраняет ссылки на фильмы и ссылки на постеры, но не скачивает сами изображения.
-IMDb-рейтинг и `imdb_id` берутся со страницы Rezka, если они там указаны.
+The crawler saves movie links and poster image URLs, but does not download the images themselves.
+The IMDb rating and `imdb_id` are extracted from the Rezka page, if available.
 
-По умолчанию crawler ходит по новинкам:
+By default, the crawler goes through new releases:
 
 ```text
 https://rezka.ag/new/
 https://rezka.ag/new/page/2/
 ```
 
-Обход жанров доступен отдельно:
+Crawling by genres is available separately:
 
 ```bash
 .venv/bin/python -m app.crawler run --source genres
 ```
 
-Популярное и best-каталоги доступны отдельно:
+Popular and best catalogs are available separately:
 
 ```bash
 .venv/bin/python -m app.crawler run --source popular
 .venv/bin/python -m app.crawler run --source best --best-slugs detective
 ```
 
-Быстрый smoke-run:
+Quick smoke-run:
 
 ```bash
 CRAWLER_PAGE_LIMIT=1 CRAWLER_ITEM_LIMIT=5 CRAWLER_IMDB_ITEM_LIMIT=2 .venv/bin/python -m app.crawler run
 ```
 
-## Запуск web
+## Running Web Application
 
 ```bash
 .venv/bin/python -m uvicorn app.server:app --host 127.0.0.1 --port 8000
 ```
 
-Открыть:
+Open:
 
 ```text
 http://127.0.0.1:8000/
@@ -224,18 +217,13 @@ Debug:
 HDREZKA_DEBUG=1 .venv/bin/python -m uvicorn app.server:app --host 127.0.0.1 --port 8000
 ```
 
-## Env notes
+## Env Notes
 
-`HDREZKA_DEBUG=0` выключает подробный debug-вывод. Если поставить `1`, поиск
-будет писать SQL/debug параметры в stdout или `docker compose logs app`.
+`HDREZKA_DEBUG=0` disables verbose debug logging. Setting it to `1` will write SQL/debug parameters to stdout or `docker compose logs app`.
 
-`REZKA_COOKIE_REFRESH_WRITE_ENV=0` означает, что Playwright cookie-refresh не
-перезаписывает `.env`; новые cookies пишутся только в `REZKA_COOKIE_FILE`,
-например `runtime/rezka_cookie.txt`. Если поставить `1`, refresh дополнительно
-заменит строку `REZKA_COOKIE=` в локальном `.env`.
+`REZKA_COOKIE_REFRESH_WRITE_ENV=0` means the Playwright cookie refresher will not overwrite `.env`; new cookies will only be written to `REZKA_COOKIE_FILE`, e.g., `runtime/rezka_cookie.txt`. Setting it to `1` will also replace the `REZKA_COOKIE=` line in the local `.env`.
 
-`REZKA_FETCH_MODE=requests` оставляет старый HTTP-клиент для Rezka. Если Rezka
-отдает `403` обычным HTTP-запросам, можно включить браузерный fetch:
+`REZKA_FETCH_MODE=requests` uses the legacy HTTP client for Rezka. If Rezka returns `403` to standard HTTP requests, you can enable the browser-based fetch:
 
 ```env
 REZKA_FETCH_MODE=playwright
@@ -244,27 +232,19 @@ REZKA_PLAYWRIGHT_HEADLESS=1
 REZKA_PLAYWRIGHT_PROFILE_DIR=runtime/rezka_browser_profile
 ```
 
-Опциональный proxy только для браузерных Rezka-запросов:
+Optional proxy for browser Rezka requests only:
 
 ```env
 REZKA_PLAYWRIGHT_PROXY=http://user:password@host:port
 ```
 
-Crawler переиспользует один persistent browser profile в течение запуска и
-между запусками. Если Playwright на VPS все равно получает `403`, проблема
-обычно в исходящем IP/датацентре, а не в cookies.
+The crawler reuses a single persistent browser profile across and between runs. If Playwright still gets `403` on the VPS, the issue is typically with the outbound IP/datacenter rather than cookies.
 
-`CRAWLER_SOURCE=new` задает дефолтный источник CLI crawler-а. Значения:
-`new` ходит по `/new/`, `popular` по `/new/?filter=popular`, `best` по
-`/{section}/best/{slug}/`, `genres` по жанровым каталогам. В UI значение `auto`
-выбирает жанровый каталог, если жанр распознан из запроса или фильтра; иначе
-используется `new`. UI-источник `Популярное по фильтрам` выбирает `best`, если
-есть распознанный жанр, иначе падает обратно на общий `popular`.
+`CRAWLER_SOURCE=new` sets the default CLI crawler source. Valid values: `new` crawls `/new/`, `popular` crawls `/new/?filter=popular`, `best` crawls `/{section}/best/{slug}/`, `genres` crawls genre catalogs. In the UI, `auto` selects a genre catalog if a genre is recognized from the query or filter; otherwise, it falls back to `new`. The UI source "Popular by filters" selects `best` if a genre is recognized, otherwise it falls back to general `popular`.
 
-## Telegram alerts
+## Telegram Alerts
 
-Создай Telegram-бота через BotFather, возьми token и chat id, затем добавь в
-`.env`:
+Create a Telegram bot via BotFather, obtain the token and chat ID, and add them to `.env`:
 
 ```env
 TELEGRAM_ALERTS_ENABLED=1
@@ -272,13 +252,11 @@ TELEGRAM_BOT_TOKEN=123456:replace_me
 TELEGRAM_CHAT_ID=123456789
 ```
 
-Если эти значения пустые или `TELEGRAM_ALERTS_ENABLED=0`, приложение просто
-не отправляет алерты.
+If these values are empty or `TELEGRAM_ALERTS_ENABLED=0`, the application simply will not send alerts.
 
-## Docker Compose local
+## Docker Compose Local
 
-Основной способ запуска: Docker Compose. Он поднимает PostgreSQL, web-app и
-одноразовый init-сервис для чистой БД.
+The recommended way to run the application is via Docker Compose. It spins up PostgreSQL, the web app, and a one-time database initialization service.
 
 ```bash
 cp .env.example .env
@@ -289,23 +267,21 @@ docker compose run --rm init-db
 docker compose up -d --build app
 ```
 
-Открыть:
+Open:
 
 ```text
 http://127.0.0.1:8000/
 ```
 
-`init-db` применяет миграцию, удаляет тестовые фильмы/состояния/логи и создает
-пользователей из `.env`:
+`init-db` applies migrations, deletes test movies/states/logs, and creates users defined in `.env`:
 
 ```env
 APP_USERS=user1:User 1,user2:User 2
 ```
 
-Повторный запуск `init-db` очищает БД. Не запускай его, если хочешь сохранить
-уже накрауленные фильмы.
+Running `init-db` again will clear the database. Do not run it if you want to keep already crawled movies.
 
-Полезные команды:
+Useful commands:
 
 ```bash
 docker compose logs -f app
@@ -315,36 +291,34 @@ docker compose down
 docker compose up -d --build app
 ```
 
-Разовая команда cookie-refresh внутри Compose:
+Manual cookie-refresh execution inside Compose:
 
 ```bash
 docker compose run --rm app python -m app.cookie_refresher refresh
 ```
 
-Разовый запуск crawler-а:
+Manual crawler execution:
 
 ```bash
 docker compose run --rm app python -m app.crawler run --source popular --page-limit 1 --item-limit 10
 ```
 
-Разовый запуск crawler-а через Playwright без изменения `.env`:
+Manual crawler execution via Playwright without modifying `.env`:
 
 ```bash
 docker compose run --rm -e REZKA_FETCH_MODE=playwright -e REZKA_PLAYWRIGHT_BROWSER=firefox app python -m app.crawler run --source new --page-limit 1 --item-limit 5
 ```
 
-## Git и GitHub SSH
+## Git and GitHub SSH
 
-Для обычного `git push` удобнее использовать SSH remote. Сначала создай или
-проверь локальный ключ:
+For a normal `git push`, using SSH remote is more convenient. First, generate or check your local key:
 
 ```bash
 ssh-keygen -t ed25519 -C "your_email@example.com"
 cat ~/.ssh/id_ed25519.pub
 ```
 
-Публичный ключ добавь в GitHub account: Settings -> SSH and GPG keys. После
-этого переключи remote:
+Add the public key to your GitHub account: Settings -> SSH and GPG keys. Then switch the remote URL:
 
 ```bash
 git remote set-url origin git@github.com:despa1r0/hdrezka_search.git
@@ -352,23 +326,19 @@ ssh -T git@github.com
 git push
 ```
 
-Если `ssh -T git@github.com` отвечает, что GitHub успешно узнал пользователя,
-обычный push/pull будет ходить через SSH.
+If `ssh -T git@github.com` confirms that GitHub successfully authenticated the user, subsequent push/pull operations will go through SSH.
 
 ## CI/CD
 
-GitHub Actions workflow лежит в `.github/workflows/ci.yml`.
+The GitHub Actions workflow is located at `.github/workflows/ci.yml`.
 
-Что делает workflow:
+What the workflow does:
 
-- `test`: ставит Python-зависимости, компилирует код, запускает health endpoint
-  tests и проверяет `docker build`;
-- `publish`: на `master` собирает и публикует image в
-  `ghcr.io/despa1r0/hdrezka_search`;
-- `deploy`: при `CD_ENABLED=true` копирует production infra-файлы на VPS,
-  затем запускает `scripts/deploy.sh` с immutable image tag по Git SHA.
+- `test`: installs Python dependencies, compiles code, runs health endpoint tests, and runs `docker build`;
+- `publish`: on the `master` branch, it builds and publishes the image to `ghcr.io/despa1r0/hdrezka_search`;
+- `deploy`: if `CD_ENABLED=true`, it copies production infrastructure files to the VPS, and then runs `scripts/deploy.sh` with an immutable image tag based on the Git SHA.
 
-Для включения CD нужны GitHub secrets:
+To enable CD, the following GitHub secrets are required:
 
 ```text
 VPS_SSH_PRIVATE_KEY
@@ -378,26 +348,23 @@ VPS_PORT
 VPS_USER
 ```
 
-И repository variable:
+And a repository variable:
 
 ```text
 CD_ENABLED=true
 ```
 
-`VPS_SSH_PRIVATE_KEY` должен быть отдельным deploy-ключом для доступа GitHub
-Actions к VPS. Public key от него добавь на VPS в
-`/home/deploy/.ssh/authorized_keys` или в `authorized_keys` того пользователя,
-который указан в `VPS_USER`.
+`VPS_SSH_PRIVATE_KEY` must be a dedicated deploy key for GitHub Actions to access the VPS. Add its public key to `/home/deploy/.ssh/authorized_keys` on the VPS (or to the `authorized_keys` of the user specified in `VPS_USER`).
 
-`VPS_KNOWN_HOSTS` можно получить с рабочей машины:
+`VPS_KNOWN_HOSTS` can be obtained from your local machine:
 
 ```bash
 ssh-keyscan -p 22 VPS_HOST
 ```
 
-Если `VPS_PORT` не задан, deploy script использует `22`.
+If `VPS_PORT` is not set, the deploy script defaults to `22`.
 
-Deploy job перед обновлением app синхронизирует на VPS:
+Before updating the app, the deploy job syncs the following to the VPS:
 
 ```text
 docker-compose.prod.yml
@@ -407,25 +374,21 @@ scripts/backup-db.sh
 ops/
 ```
 
-Локальные VPS-файлы `.env`, `runtime/` и `backups/` не входят в архив
-синхронизации и не перезаписываются.
+Local VPS files like `.env`, `runtime/`, and `backups/` are excluded from the sync process and are not overwritten.
 
-После успешного push в `master`, если `CD_ENABLED=true`, цепочка такая:
+After a successful push to `master` with `CD_ENABLED=true`, the execution flow is:
 
 ```text
 test -> publish image to GHCR -> sync infra files -> candidate healthcheck -> app update
 ```
 
-Если `test`, `publish` или candidate healthcheck падают, production app не
-должен замениться на новую версию.
+If `test`, `publish`, or the candidate healthcheck fails, the production app will not be updated.
 
 ## VPS + Tailscale
 
-Рекомендуемый вариант: Tailscale ставится на сам VPS, а Docker публикует
-web-контейнер только на Tailscale IP. Так app доступен участникам tailnet, но
-не торчит в публичный интернет.
+Recommended setup: Tailscale is installed on the VPS, and Docker exposes the web container only on the Tailscale IP. This makes the app accessible only to members of your tailnet, keeping it closed to the public internet.
 
-На чистом Ubuntu/Debian VPS:
+On a clean Ubuntu/Debian VPS:
 
 ```bash
 sudo apt update
@@ -434,7 +397,7 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker "$USER"
 ```
 
-Перезайди по SSH, чтобы группа `docker` применилась, затем поставь Tailscale:
+Re-login via SSH for the `docker` group membership to take effect, then install Tailscale:
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
@@ -442,7 +405,7 @@ sudo tailscale up
 tailscale ip -4
 ```
 
-Скопируй Tailscale IP. Дальше залей проект:
+Copy the Tailscale IP. Next, clone the project:
 
 ```bash
 git clone https://github.com/despa1r0/hdrezka_search.git
@@ -452,23 +415,23 @@ cp .env.example .env
 nano .env
 ```
 
-Для production layout лучше держать проект в `/opt/hdrezka_search`:
+For a production layout, it's best to keep the project in `/opt/hdrezka_search`:
 
 ```bash
 sudo mkdir -p /opt/hdrezka_search
 sudo chown "$USER:$USER" /opt/hdrezka_search
 ```
 
-CD и backup scripts ожидают именно этот путь.
+The CD and backup scripts expect this specific path.
 
-В `.env` на VPS выставь. `APP_USERS` можно сразу заменить на новые имена:
+In the `.env` file on the VPS, set the configuration. You can replace the sample `APP_USERS` with the actual ones:
 
 ```env
 COMPOSE_PROJECT_NAME=hdrezka_search
 POSTGRES_USER=hdrezka_user
 POSTGRES_PASSWORD=replace_with_strong_password
 POSTGRES_DB=hdrezka_filter
-APP_BIND=TAILSCALE_IP_СЮДА
+APP_BIND=YOUR_TAILSCALE_IP_HERE
 APP_PORT=8000
 APP_USERS=client1:Client 1,client2:Client 2
 DATABASE_URL=postgresql://hdrezka_user:replace_with_strong_password@db:5432/hdrezka_filter
@@ -480,12 +443,11 @@ TELEGRAM_BOT_TOKEN=replace_me
 TELEGRAM_CHAT_ID=replace_me
 ```
 
-`APP_BIND` важен: так Docker будет слушать только Tailscale-адрес VPS, а не
-публичный интернет.
+`APP_BIND` is important: it ensures Docker only listens on the Tailscale IP of the VPS, not on the public interface.
 
-### Чистый старт без переноса БД
+### Fresh Start (No DB Migration)
 
-Только для пустой базы:
+Only for an empty database:
 
 ```bash
 mkdir -p runtime
@@ -494,25 +456,24 @@ docker compose run --rm init-db
 docker compose up -d --build app
 ```
 
-`init-db` удаляет фильмы/состояния. Не запускай эту команду, если переносишь
-текущую базу.
+`init-db` deletes movies/states. Do not run it if you are migrating existing data.
 
-### Перенос текущей БД
+### Migrating Existing Database
 
-На старой машине сделай дамп:
+Generate a dump on the source machine:
 
 ```bash
 mkdir -p backups
 docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > backups/hdrezka_filter_$(date +%Y%m%d_%H%M%S).dump
 ```
 
-Скопируй дамп на VPS, например:
+Copy the dump to the VPS, for example:
 
 ```bash
 scp backups/hdrezka_filter_20260609_153444.dump user@VPS_IP:/opt/hdrezka_search/backups/
 ```
 
-На VPS восстанови дамп вместо `init-db`:
+Restore the dump on the VPS instead of running `init-db`:
 
 ```bash
 cd /opt/hdrezka_search
@@ -522,66 +483,54 @@ docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB
 docker compose up -d --build app
 ```
 
-Если нужно переименовать существующих пользователей и сохранить их `seen`,
-`favorite`, `shown_items`, выставь новый `APP_USERS` в `.env` и запусти:
+If you need to rename existing users while preserving their `seen`, `favorite`, and `shown_items` status, configure the new `APP_USERS` in `.env` and run:
 
 ```bash
 docker compose run --rm app python -m app.admin rename-existing-users
 docker compose restart app
 ```
 
-Команда сопоставляет пользователей по текущему `id` и порядку в `APP_USERS`.
-Количество пользователей в базе и в `APP_USERS` должно совпадать.
+This command maps users by their current ID and their position in `APP_USERS`. The number of users in the DB must match the number of users in `APP_USERS`.
 
-Открыть с телефона, подключенного к тому же Tailnet:
+Access the application from a phone connected to the same Tailnet:
 
 ```text
-http://TAILSCALE_IP_ТВОЕГО_VPS:8000/
+http://YOUR_VPS_TAILSCALE_IP:8000/
 ```
 
-Если включен `ufw`, разреши порт только на Tailscale-интерфейсе:
+If `ufw` is active, allow the port only on the Tailscale interface:
 
 ```bash
 sudo ufw allow in on tailscale0 to any port 8000 proto tcp
 ```
 
-Обновление после нового push:
+Updating after a new push:
 
 ```bash
 git pull
 docker compose up -d --build app
 ```
 
-Для production compose с уже опубликованным GHCR image:
+For production compose utilizing the published GHCR image:
 
 ```bash
 cd /opt/hdrezka_search
 IMAGE_TAG=latest docker compose -f docker-compose.prod.yml up -d db gluetun app
 ```
 
-После включения CD руками обновлять app обычно не нужно: push в `master`
-соберет image и deploy job перезапустит `app` на VPS.
+Once CD is enabled, manual updates on the VPS are generally unnecessary: pushing to `master` will build the image and trigger the deployment job to restart the `app` container on the VPS.
 
-### Фоновые задачи
+### Background Tasks
 
-Пассивный crawler работает только если `PASSIVE_CRAWLER_ENABLED=1`. При старте
-FastAPI запускается daemon thread, который раз в `PASSIVE_CRAWLER_INTERVAL_SECONDS`
-секунд обходит один каталог и пишет подходящие фильмы в БД. Если значение `0`
-или пустое, база наполняется только кнопкой `Загрузить еще` или CLI-командой
-`python -m app.crawler run`.
+The passive crawler runs only when `PASSIVE_CRAWLER_ENABLED=1`. When FastAPI starts, it launches a daemon thread that crawls one catalog every `PASSIVE_CRAWLER_INTERVAL_SECONDS` seconds, writing suitable movies to the database. If this is `0` or empty, the database is populated only via the "Load More" button or the CLI command `python -m app.crawler run`.
 
-Автообновление cookies через Playwright работает только если
-`REZKA_COOKIE_REFRESH_ENABLED=1`. При старте FastAPI запускается daemon thread,
-который обновляет cookies раз в день в `REZKA_COOKIE_REFRESH_HOUR:MINUTE` и
-пишет их в `REZKA_COOKIE_FILE`, обычно `runtime/rezka_cookie.txt`.
+Automatic cookie updates via Playwright run only when `REZKA_COOKIE_REFRESH_ENABLED=1`. On FastAPI startup, a daemon thread is spawned to refresh cookies once a day at `REZKA_COOKIE_REFRESH_HOUR:MINUTE`, writing them to `REZKA_COOKIE_FILE` (typically `runtime/rezka_cookie.txt`).
 
-### PostgreSQL backups
+### PostgreSQL Backups
 
-Backup script лежит в `scripts/backup-db.sh`. Он делает `pg_dump -Fc`,
-проверяет dump через `pg_restore --list`, пишет `.sha256` и удаляет старые
-backup-файлы по retention.
+The backup script is located at `scripts/backup-db.sh`. It performs `pg_dump -Fc`, verifies the dump with `pg_restore --list`, writes a `.sha256` checksum, and removes older backups based on the retention policy.
 
-Ручная проверка на VPS:
+Manual verification on the VPS:
 
 ```bash
 cd /opt/hdrezka_search
@@ -589,7 +538,7 @@ BACKUP_RETENTION_DAYS=14 scripts/backup-db.sh
 ls -lh backups
 ```
 
-Systemd units лежат в `ops/systemd/`. Установка:
+Systemd units are located in `ops/systemd/`. Installation:
 
 ```bash
 sudo cp ops/systemd/hdrezka-backup.service /etc/systemd/system/
@@ -599,21 +548,19 @@ sudo systemctl enable --now hdrezka-backup.timer
 systemctl list-timers hdrezka-backup.timer
 ```
 
-Перед включением проверь, что `User=` и `Group=` в
-`hdrezka-backup.service` совпадают с пользователем на VPS, который имеет
-доступ к Docker.
+Before enabling, ensure that `User=` and `Group=` settings in `hdrezka-backup.service` match the VPS user authorized to run Docker commands.
 
-## Monitoring и логи
+## Monitoring and Logs
 
-Проект включает минимальный observability stack:
+The project includes a minimal observability stack:
 
 ```text
-Grafana  -> UI для просмотра логов
-Loki     -> хранение логов
-Promtail -> сбор Docker container logs
+Grafana  -> UI for log visualization
+Loki     -> log storage
+Promtail -> collects Docker container logs
 ```
 
-Конфиги лежат в:
+Configurations are located at:
 
 ```text
 docker-compose.observability.yml
@@ -622,25 +569,24 @@ ops/promtail/promtail.yml
 ops/grafana/provisioning/datasources/loki.yml
 ```
 
-Добавь в production `.env` значения. `OBS_BIND` лучше ставить на Tailscale IP,
-а не на публичный адрес:
+Add configuration values to production `.env`. Setting `OBS_BIND` to the Tailscale IP is recommended over public IP binding:
 
 ```env
-OBS_BIND=TAILSCALE_IP_СЮДА
+OBS_BIND=YOUR_TAILSCALE_IP_HERE
 GRAFANA_PORT=3000
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=replace_with_strong_password
 LOKI_PORT=3100
 ```
 
-Поднять observability на VPS:
+Start the observability stack on the VPS:
 
 ```bash
 cd /opt/hdrezka_search
 docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml up -d loki promtail grafana
 ```
 
-Проверить:
+Verify:
 
 ```bash
 docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml ps
@@ -649,14 +595,13 @@ docker logs --tail 100 hdrezka-loki
 docker logs --tail 100 hdrezka-grafana
 ```
 
-Открыть Grafana:
+Open Grafana:
 
 ```text
-http://TAILSCALE_IP_СЮДА:3000/
+http://YOUR_VPS_TAILSCALE_IP:3000/
 ```
 
-Datasource Loki создается автоматически. В Grafana открой Explore и выбери
-`Loki`. Примеры запросов:
+The Loki datasource is configured automatically. In Grafana, navigate to Explore and select `Loki`. Sample queries:
 
 ```logql
 {container="hdrezka-app"}
@@ -665,59 +610,58 @@ Datasource Loki создается автоматически. В Grafana отк
 {container="hdrezka-gluetun"}
 ```
 
-Passive crawler пишет JSON-строки в stdout app-контейнера. Смотреть его:
+The passive crawler writes JSON strings to the app container's stdout. To filter these logs:
 
 ```logql
 {container="hdrezka-app"} |= "\"component\": \"passive_crawler\""
 ```
 
-Только ошибки passive crawler-а:
+To show only errors from the passive crawler:
 
 ```logql
 {container="hdrezka-app"} |= "\"component\": \"passive_crawler\"" |= "\"level\": \"error\""
 ```
 
-Завершенные циклы:
+Completed cycles:
 
 ```logql
 {container="hdrezka-app"} |= "\"event\": \"cycle_finished\""
 ```
 
-Loki настроен на файловое хранение и retention 7 дней:
+Loki is configured for filesystem storage with a 7-day retention period:
 
 ```yaml
 retention_period: 168h
 ```
 
-Метрики CPU/RAM/disk/container пока не добавлены. Для них отдельным следующим
-шагом можно добавить Prometheus/cAdvisor/node-exporter.
+CPU/RAM/disk/container metrics are currently not included. You can add Prometheus/cAdvisor/node-exporter in a future step.
 
-Остановить observability:
+Stop the observability stack:
 
 ```bash
 docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml stop grafana promtail loki
 ```
 
-## Порядок следующих работ
+## Future Work Roadmap
 
-Текущий лучший порядок:
+Recommended sequence:
 
-1. Настроить обычный GitHub SSH push с локальной машины.
-2. Довести VPS до production layout `/opt/hdrezka_search`.
-3. Проверить production compose вручную: `db`, `gluetun`, `app`, `/readyz`.
-4. Настроить GitHub Actions secrets/vars и включить CD.
-5. Запустить workflow вручную и проверить candidate deploy + rollback path.
-6. Установить и проверить PostgreSQL backups.
-7. Поднять Grafana/Loki/Promtail на VPS.
-8. Добавить dashboards/alerts поверх Loki.
-9. Добавить метрики через Prometheus/cAdvisor/node-exporter, если понадобятся.
-10. Вернуться к app-улучшениям: retry/backoff, crawler limits, расширение тестов.
+1. Configure GitHub SSH push from your local machine.
+2. Structure the production VPS directory layout as `/opt/hdrezka_search`.
+3. Verify production compose manually: `db`, `gluetun`, `app`, `/readyz`.
+4. Configure GitHub Actions secrets/variables and enable CD.
+5. Manually run the workflow to verify candidate deployment and rollback.
+6. Install and test PostgreSQL backups.
+7. Set up Grafana/Loki/Promtail on the VPS.
+8. Add dashboards and alerts on top of Loki.
+9. Integrate metrics via Prometheus/cAdvisor/node-exporter if needed.
+10. Return to app-specific improvements: retry/backoff, crawler limits, test expansion.
 
-## Остановка сервера
+## Stopping the Server
 
-Остановить `uvicorn` в терминале через `Ctrl+C`.
+Stop `uvicorn` in your terminal using `Ctrl+C`.
 
-## Проверки
+## Verification Checks
 
 ```bash
 .venv/bin/python -m compileall -q app tests_local main.py
@@ -725,9 +669,9 @@ docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml st
 .venv/bin/python tests_local/test_search_logic.py
 ```
 
-`test_search_logic.py` требует поднятый PostgreSQL и примененную миграцию.
+`test_search_logic.py` requires a running PostgreSQL instance and migrations applied.
 
-## Структура
+## Project Structure
 
 ```text
 app/
@@ -751,10 +695,10 @@ static/
 templates/
   index.html
 tests_local/
-docker-compose.observability.yml
-docker-compose.prod.yml
+  docker-compose.observability.yml
+  docker-compose.prod.yml
 main.py
 requirements.txt
 ```
 
-Подробный статус и дальнейшие этапы: [PROJECT_STATUS.md](PROJECT_STATUS.md).
+Detailed status and next stages: [PROJECT_STATUS.md](PROJECT_STATUS.md).
